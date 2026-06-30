@@ -321,6 +321,76 @@ function simTournament(ratings, rho = DEFAULT_RHO) {
 }
 
 /**
+ * Simulate one full tournament and also return the full bracket matchups.
+ * Returns { reached, bracket } where bracket is a map of match number to
+ * { a: team, b: team, winner: team } for that simulation.
+ */
+function simTournamentDetailed(ratings, rho = DEFAULT_RHO) {
+  const reached = {};
+  const bracket = {};
+  const markReach = (team, stage) => {
+    if (!(team in reached) || STAGE_RANK[stage] > STAGE_RANK[reached[team]]) {
+      reached[team] = stage;
+    }
+  };
+  const matchHost = (team) => HOSTS.has(team);
+
+  // Group stage.
+  const winners = {};
+  const runners = {};
+  const thirds = [];
+  for (const letter of GROUP_LETTERS) {
+    const standings = simGroup(GROUPS[letter], ratings, rho);
+    winners[letter] = standings[0].team;
+    runners[letter] = standings[1].team;
+    thirds.push({ group: letter, ...standings[2] });
+  }
+
+  // Best 8 third-placed teams.
+  thirds.sort((a, b) => compareStandings(a, b, ratings));
+  const advancingThirds = thirds.slice(0, 8);
+  const thirdByGroup = {};
+  for (const t of advancingThirds) thirdByGroup[t.group] = t.team;
+  const thirdAssignment = assignThirds(advancingThirds.map((t) => t.group));
+
+  function resolveSlot(slot, matchNumber) {
+    if (slot.t === 'w') return winners[slot.g];
+    if (slot.t === 'ru') return runners[slot.g];
+    return thirdByGroup[thirdAssignment[matchNumber]];
+  }
+
+  const matchWinner = {};
+
+  // Round of 32.
+  for (const m of R32_TEMPLATE) {
+    const teamA = resolveSlot(m.a, m.n);
+    const teamB = resolveSlot(m.b, m.n);
+    markReach(teamA, 'R32');
+    markReach(teamB, 'R32');
+    const w = knockoutWinner(ratings[teamA], ratings[teamB], matchHost(teamA), matchHost(teamB), rho);
+    const winner = w === 0 ? teamA : teamB;
+    matchWinner[m.n] = winner;
+    bracket[m.n] = { a: teamA, b: teamB, winner };
+  }
+
+  // Later rounds.
+  for (const m of LATER_ROUNDS) {
+    const teamA = matchWinner[m.a];
+    const teamB = matchWinner[m.b];
+    const stage = ROUND_OF[m.n];
+    markReach(teamA, stage);
+    markReach(teamB, stage);
+    const w = knockoutWinner(ratings[teamA], ratings[teamB], matchHost(teamA), matchHost(teamB), rho);
+    const winner = w === 0 ? teamA : teamB;
+    matchWinner[m.n] = winner;
+    bracket[m.n] = { a: teamA, b: teamB, winner };
+    if (m.n === 103) markReach(winner, 'CHAMPION');
+  }
+
+  return { reached, bracket };
+}
+
+/**
  * Run the Monte Carlo simulation `iterations` times and tally how often each
  * team reaches each stage. Returns per-team probabilities (0..1).
  */
@@ -365,12 +435,90 @@ function runMonteCarlo(eloModel, iterations = 10000, { rho = DEFAULT_RHO, onProg
   return result;
 }
 
+/**
+ * Run Monte Carlo and also track bracket slot occupancies.
+ * Returns { odds, bracket } where:
+ *   odds: per-team stage probabilities (same shape as runMonteCarlo)
+ *   bracket: match number -> { a: { team: count }, b: { team: count }, winner: { team: count } }
+ */
+function runMonteCarloDetailed(eloModel, iterations = 10000, { rho = DEFAULT_RHO, onProgress } = {}) {
+  const allTeams = Object.values(GROUPS).flat();
+  const ratings = {};
+  for (const t of allTeams) ratings[t] = eloModel.getRating(t);
+
+  const tally = {};
+  for (const t of allTeams) {
+    tally[t] = { r32: 0, r16: 0, qf: 0, sf: 0, final: 0, champion: 0 };
+  }
+
+  const bracketTally = {};
+  for (const m of [...R32_TEMPLATE, ...LATER_ROUNDS]) {
+    bracketTally[m.n] = { a: {}, b: {}, winner: {} };
+  }
+
+  for (let i = 0; i < iterations; i++) {
+    const { reached, bracket } = simTournamentDetailed(ratings, rho);
+    for (const [team, stage] of Object.entries(reached)) {
+      const r = STAGE_RANK[stage];
+      const acc = tally[team];
+      if (r >= STAGE_RANK.R32) acc.r32++;
+      if (r >= STAGE_RANK.R16) acc.r16++;
+      if (r >= STAGE_RANK.QF) acc.qf++;
+      if (r >= STAGE_RANK.SF) acc.sf++;
+      if (r >= STAGE_RANK.FINAL) acc.final++;
+      if (r >= STAGE_RANK.CHAMPION) acc.champion++;
+    }
+    for (const [n, slot] of Object.entries(bracket)) {
+      const t = bracketTally[n];
+      t.a[slot.a] = (t.a[slot.a] || 0) + 1;
+      t.b[slot.b] = (t.b[slot.b] || 0) + 1;
+      t.winner[slot.winner] = (t.winner[slot.winner] || 0) + 1;
+    }
+    if (onProgress && (i + 1) % 1000 === 0) onProgress(i + 1, iterations);
+  }
+
+  const odds = {};
+  for (const t of allTeams) {
+    const c = tally[t];
+    odds[t] = {
+      r32: c.r32 / iterations,
+      r16: c.r16 / iterations,
+      qf: c.qf / iterations,
+      sf: c.sf / iterations,
+      final: c.final / iterations,
+      champion: c.champion / iterations,
+    };
+  }
+
+  const bracket = {};
+  for (const [n, t] of Object.entries(bracketTally)) {
+    bracket[n] = {
+      a: normalizeCounts(t.a, iterations),
+      b: normalizeCounts(t.b, iterations),
+      winner: normalizeCounts(t.winner, iterations),
+    };
+  }
+  return { odds, bracket };
+}
+
+/** Convert count maps to probability maps sorted by descending probability. */
+function normalizeCounts(counts, iterations) {
+  const entries = Object.entries(counts)
+    .map(([team, count]) => [team, count / iterations])
+    .sort((a, b) => b[1] - a[1]);
+  const result = {};
+  for (const [team, p] of entries) result[team] = p;
+  return result;
+}
+
 module.exports = {
   expectedGoals,
   predictMatch,
   samplePoisson,
   simTournament,
+  simTournamentDetailed,
   runMonteCarlo,
+  runMonteCarloDetailed,
   HOSTS,
   R32_TEMPLATE,
   LATER_ROUNDS,

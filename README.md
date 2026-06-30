@@ -70,6 +70,23 @@ node polycup.js --sims=50000
 node polycup.js 2000
 ```
 
+### Shareable output (presentation)
+
+Polycup can generate shareable artifacts non-interactively, then exit:
+
+```bash
+node polycup.js --bracket=bracket.html   # predicted knockout bracket (HTML + SVG)
+node polycup.js --report=report.html     # full HTML report: odds, groups, paths
+node polycup.js --json                   # title odds + head-to-head to stdout
+node polycup.js --json=odds.json         # ... or to a file
+node polycup.js --csv=odds.csv           # title odds as CSV (+ a -h2h.csv file)
+```
+
+The same artifacts are available from the interactive prompt via the `bracket`,
+`report`, and `export json|csv` commands, plus a `profile <team>` command that
+prints a team card (Elo, path odds, recent form, and group-stage schedule). All
+outputs are self-contained and dependency-free.
+
 ### First run vs. cached runs
 
 - **First run:** downloads the historical results dataset
@@ -91,6 +108,11 @@ After the simulation runs and prints the title-odds table, you get a prompt:
 > Brazil vs France     # head-to-head match prediction
 > titles               # reprint the full title-odds table
 > teams                # list all 48 qualified teams + groups
+> profile Brazil       # team card: Elo, path odds, recent form, group schedule
+> bracket              # write the predicted knockout bracket to an HTML file
+> report               # write a full HTML report (odds, groups, paths)
+> export json          # export title odds + head-to-head as JSON
+> export csv           # export title odds + head-to-head as CSV
 > backtest 2022        # validate against the 2022 World Cup
 > live                 # re-download latest results and lock played matches
 > help                 # show available commands
@@ -133,7 +155,7 @@ Per the official FIFA final draw (5 December 2025, Washington, D.C.):
 ## How it works
 
 The pipeline is **Elo → expected goals → Dixon-Coles/Poisson → Monte Carlo**, split across
-eight files:
+twelve files:
 
 | File | Responsibility |
 |---|---|
@@ -143,6 +165,10 @@ eight files:
 | `backtest.js` | Validates the model against past World Cups (2018 and 2022) by rebuilding pre-tournament Elo ratings and comparing predictions to actual results. |
 | `calibration.js` | Calibration metrics (Brier score, Expected Calibration Error) for the backtest. |
 | `live.js` | During the tournament, re-downloads the latest results, locks in played matches, and only simulates the remaining fixtures. |
+| `bracket.js` | Generates a self-contained HTML/SVG visualization of the predicted knockout bracket from the Monte Carlo bracket occupancies. |
+| `report.js` | Generates a single self-contained HTML report: title odds, expected group standings, and team path probabilities. |
+| `export.js` | JSON and CSV exporters for the title odds and the full head-to-head prediction matrix. |
+| `profile.js` | Renders a per-team text profile card (Elo, group, path odds, recent form, group-stage schedule). |
 | `worldcup2026.js` | The 48 qualified teams, their group assignments, and the name mapping between this project's display names and the dataset's spellings (plus loose CLI aliases). |
 | `polycup.js` | The CLI entry point: wires everything together, runs the simulation, renders the title-odds table, and launches the interactive prompt. |
 
