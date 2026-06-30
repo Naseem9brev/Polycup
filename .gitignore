@@ -7,6 +7,10 @@
 # Polycup project-local config (user-specific)
 .polycuprc.json
 
+# SEA build artifacts
+sea-config.json
+dist/
+
 # Logs
 logs
 *.log

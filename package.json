@@ -1,17 +1,52 @@
 {
   "name": "polycup",
   "version": "1.0.0",
-  "description": "Dependency-free Node.js CLI that predicts the 2026 FIFA World Cup via Elo + Poisson + Monte Carlo.",
+  "description": "Dependency-free Node.js CLI that predicts the 2026 FIFA World Cup via Elo + Dixon-Coles/Poisson + Monte Carlo.",
+  "main": "polycup.js",
   "bin": {
     "polycup": "polycup.js"
   },
-  "main": "polycup.js",
+  "files": [
+    "polycup.js",
+    "elo.js",
+    "dixoncoles.js",
+    "simulation.js",
+    "backtest.js",
+    "calibration.js",
+    "live.js",
+    "worldcup2026.js",
+    "LICENSE",
+    "README.md"
+  ],
   "scripts": {
-    "start": "node polycup.js"
+    "start": "node polycup.js",
+    "build:binary": "node scripts/build-binary.js"
   },
+  "keywords": [
+    "world-cup",
+    "2026",
+    "fifa",
+    "elo",
+    "poisson",
+    "dixon-coles",
+    "monte-carlo",
+    "soccer",
+    "football",
+    "prediction",
+    "cli",
+    "dependency-free"
+  ],
+  "author": "Avi (https://github.com/avikabra)",
+  "license": "MIT",
   "engines": {
     "node": ">=18"
   },
-  "license": "MIT",
-  "private": true
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/avikabra/Polycup.git"
+  },
+  "bugs": {
+    "url": "https://github.com/avikabra/Polycup/issues"
+  },
+  "homepage": "https://github.com/avikabra/Polycup#readme"
 }

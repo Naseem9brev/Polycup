@@ -1,4 +1,16 @@
-# Polycup
+<p align="center">
+  ⚽🏆🇺🇸🇲🇽🇨🇦🇧🇷🇦🇷🇫🇷🇩🇪🇪🇸🇳🇱🇵🇹🇮🇹🇧🇪🇺🇾🇭🇷🇯🇵🇰🇷🇲🇦⚽🏆
+</p>
+
+<h1 align="center">⚽ Polycup 🏆</h1>
+
+<p align="center">
+  <strong>Node.js · Elo · Dixon-Coles · Poisson · Monte Carlo</strong>
+</p>
+
+<p align="center">
+  🏆🇫🇷⚽🇧🇷🇦🇷🇩🇪🇺🇸🇲🇽🇨🇦🇪🇸🇳🇱🇵🇹🇮🇹🇧🇪🇺🇾🇭🇷🇯🇵🇰🇷🇲🇦⚽🏆
+</p>
 
 A dependency-free Node.js CLI that predicts the **2026 FIFA World Cup**. It
 computes Elo ratings from ~49,000 historical international matches, feeds them
@@ -35,6 +47,91 @@ in every match already played, and only simulates the fixtures still to come.
 - Node.js **>= 18** (uses the built-in global `fetch`; developed on Node 24).
 - **No `npm install` step.** There are zero third-party dependencies.
 
+## Installation
+
+Choose whichever method fits your workflow. Polycup itself has no dependencies.
+
+### npm / npx
+
+Install globally:
+
+```bash
+npm install -g polycup
+polycup
+```
+
+Or run without installing:
+
+```bash
+npx polycup
+```
+
+### From source
+
+Clone the repository and link the command locally:
+
+```bash
+git clone https://github.com/avikabra/Polycup.git
+cd Polycup
+npm link        # then run:
+polycup
+```
+
+### Docker
+
+A minimal image is published to the GitHub Container Registry:
+
+```bash
+docker pull ghcr.io/avikabra/polycup:latest
+docker run --rm -it ghcr.io/avikabra/polycup:latest
+```
+
+Or build the image yourself:
+
+```bash
+docker build -t polycup .
+docker run --rm -it polycup
+```
+
+The container runs `polycup.js` as its entrypoint. Pass the usual arguments:
+
+```bash
+docker run --rm -it polycup --sims=50000
+```
+
+### Prebuilt binary
+
+Download the single-file binary for your platform from the
+[GitHub Releases](https://github.com/avikabra/Polycup/releases) page:
+
+```bash
+# macOS example
+chmod +x polycup-macos
+./polycup-macos
+```
+
+To build a binary locally, run:
+
+```bash
+npm run build:binary
+./dist/polycup
+```
+
+This uses Node.js [Single Executable Applications](https://nodejs.org/api/single-executable-applications.html)
+(`--experimental-sea-config`). It needs Node.js >= 20.6; `postject` is resolved
+automatically via `npx` at build time and is **not** added to the package.
+
+> **Note for local macOS builds:** Node 24's macOS binary may contain the SEA
+> sentinel string more than once, which causes `postject` to fail. If that
+> happens, download Node 20/22 for macOS and point the build script to it:
+>
+> ```bash
+> SEA_NODE_BIN=/path/to/node-20 npm run build:binary
+> ```
+>
+> The GitHub Actions release workflow already uses Node 20, so the published
+> release binaries are not affected.
+
 ## Usage
 
 Run directly:
@@ -43,11 +140,9 @@ Run directly:
 node polycup.js
 ```
 
-Or, optionally, install it as a global command (no third-party deps are pulled
-in):
+Or, after installing via any method above, simply run:
 
 ```bash
-npm link        # then run:
 polycup
 ```
 
@@ -95,6 +190,23 @@ Team names are fuzzy-matched: in addition to aliases and prefixes, common typos
 The interactive prompt also keeps a command history (up-arrow) in
 `~/.polycup_history`.
 
+### Shareable output (presentation)
+
+Polycup can generate shareable artifacts non-interactively, then exit:
+
+```bash
+node polycup.js --bracket=bracket.html   # predicted knockout bracket (HTML + SVG)
+node polycup.js --report=report.html     # full HTML report: odds, groups, paths
+node polycup.js --json                   # title odds + head-to-head to stdout
+node polycup.js --json=odds.json         # ... or to a file
+node polycup.js --csv=odds.csv           # title odds as CSV (+ a -h2h.csv file)
+```
+
+The same artifacts are available from the interactive prompt via the `bracket`,
+`report`, and `export json|csv` commands, plus a `profile <team>` command that
+prints a team card (Elo, path odds, recent form, and group-stage schedule). All
+outputs are self-contained and dependency-free.
+
 ### First run vs. cached runs
 
 - **First run:** downloads the historical results dataset
@@ -116,6 +228,11 @@ After the simulation runs and prints the title-odds table, you get a prompt:
 > Brazil vs France     # head-to-head match prediction
 > titles               # reprint the full title-odds table
 > teams                # list all 48 qualified teams + groups
+> profile Brazil       # team card: Elo, path odds, recent form, group schedule
+> bracket              # write the predicted knockout bracket to an HTML file
+> report               # write a full HTML report (odds, groups, paths)
+> export json          # export title odds + head-to-head as JSON
+> export csv           # export title odds + head-to-head as CSV
 > backtest 2022        # validate against the 2022 World Cup
 > live                 # re-download latest results and lock played matches
 > help                 # show available commands
@@ -158,7 +275,7 @@ Per the official FIFA final draw (5 December 2025, Washington, D.C.):
 ## How it works
 
 The pipeline is **Elo → expected goals → Dixon-Coles/Poisson → Monte Carlo**, split across
-ten files:
+fourteen files:
 
 | File | Responsibility |
 |---|---|
@@ -168,6 +285,10 @@ ten files:
 | `backtest.js` | Validates the model against past World Cups (2018 and 2022) by rebuilding pre-tournament Elo ratings and comparing predictions to actual results. |
 | `calibration.js` | Calibration metrics (Brier score, Expected Calibration Error) for the backtest. |
 | `live.js` | During the tournament, re-downloads the latest results, locks in played matches, and only simulates the remaining fixtures. |
+| `bracket.js` | Generates a self-contained HTML/SVG visualization of the predicted knockout bracket from the Monte Carlo bracket occupancies. |
+| `report.js` | Generates a single self-contained HTML report: title odds, expected group standings, and team path probabilities. |
+| `export.js` | JSON and CSV exporters for the title odds and the full head-to-head prediction matrix. |
+| `profile.js` | Renders a per-team text profile card (Elo, group, path odds, recent form, group-stage schedule). |
 | `config.js` | Loads defaults from `~/.polycup/config.json` and `.polycuprc.json`, validated and merged under CLI flags. |
 | `rng.js` | Seedable pseudo-random number generator (sfc32) with a swappable global hook, enabling reproducible and resumable Monte Carlo runs. |
 | `worldcup2026.js` | The 48 qualified teams, their group assignments, the name mapping between this project's display names and the dataset's spellings (plus loose CLI aliases), and fuzzy typo matching. |

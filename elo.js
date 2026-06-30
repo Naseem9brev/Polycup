@@ -208,6 +208,7 @@ async function buildEloModel(options = {}) {
     ratings,
     matchCount: matches.length,
     BASE_RATING,
+    matches,
   };
 }
 
