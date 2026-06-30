@@ -35,6 +35,91 @@ in every match already played, and only simulates the fixtures still to come.
 - Node.js **>= 18** (uses the built-in global `fetch`; developed on Node 24).
 - **No `npm install` step.** There are zero third-party dependencies.
 
+## Installation
+
+Choose whichever method fits your workflow. Polycup itself has no dependencies.
+
+### npm / npx
+
+Install globally:
+
+```bash
+npm install -g polycup
+polycup
+```
+
+Or run without installing:
+
+```bash
+npx polycup
+```
+
+### From source
+
+Clone the repository and link the command locally:
+
+```bash
+git clone https://github.com/avikabra/Polycup.git
+cd Polycup
+npm link        # then run:
+polycup
+```
+
+### Docker
+
+A minimal image is published to the GitHub Container Registry:
+
+```bash
+docker pull ghcr.io/avikabra/polycup:latest
+docker run --rm -it ghcr.io/avikabra/polycup:latest
+```
+
+Or build the image yourself:
+
+```bash
+docker build -t polycup .
+docker run --rm -it polycup
+```
+
+The container runs `polycup.js` as its entrypoint. Pass the usual arguments:
+
+```bash
+docker run --rm -it polycup --sims=50000
+```
+
+### Prebuilt binary
+
+Download the single-file binary for your platform from the
+[GitHub Releases](https://github.com/avikabra/Polycup/releases) page:
+
+```bash
+# macOS example
+chmod +x polycup-macos
+./polycup-macos
+```
+
+To build a binary locally, run:
+
+```bash
+npm run build:binary
+./dist/polycup
+```
+
+This uses Node.js [Single Executable Applications](https://nodejs.org/api/single-executable-applications.html)
+(`--experimental-sea-config`). It needs Node.js >= 20.6; `postject` is resolved
+automatically via `npx` at build time and is **not** added to the package.
+
+> **Note for local macOS builds:** Node 24's macOS binary may contain the SEA
+> sentinel string more than once, which causes `postject` to fail. If that
+> happens, download Node 20/22 for macOS and point the build script to it:
+>
+> ```bash
+> SEA_NODE_BIN=/path/to/node-20 npm run build:binary
+> ```
+>
+> The GitHub Actions release workflow already uses Node 20, so the published
+> release binaries are not affected.
+
 ## Usage
 
 Run directly:
@@ -43,11 +128,9 @@ Run directly:
 node polycup.js
 ```
 
-Or, optionally, install it as a global command (no third-party deps are pulled
-in):
+Or, after installing via any method above, simply run:
 
 ```bash
-npm link        # then run:
 polycup
 ```
 
