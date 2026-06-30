@@ -13,6 +13,7 @@
 const { loadResults, parseMatches } = require('./elo');
 const { expectedGoals, HOSTS } = require('./simulation');
 const { sampleDixonColes, jointProbabilityMatrix, estimateRhoFromDataset } = require('./dixoncoles');
+const { report: calibrationReport } = require('./calibration');
 
 const MAX_GOALS = 10;
 
@@ -167,6 +168,7 @@ function evaluateMatchPredictions(actualMatches, ratings, rho, host) {
   let logLoss = 0;
   const buckets = {};
   const stageBuckets = { group: { n: 0, correct: 0 }, knockout: { n: 0, correct: 0 } };
+  const predictions = [];
 
   for (let idx = 0; idx < actualMatches.length; idx++) {
     const m = actualMatches[idx];
@@ -198,6 +200,7 @@ function evaluateMatchPredictions(actualMatches, ratings, rho, host) {
 
     const pActual = actual === 'H' ? pHome : actual === 'D' ? pDraw : pAway;
     logLoss += -Math.log(pActual + 1e-12);
+    predictions.push({ pHome, pDraw, pAway, actual });
 
     const favProb = Math.max(pHome, pDraw, pAway);
     const bucket = Math.floor(favProb * 10) / 10;
@@ -210,7 +213,8 @@ function evaluateMatchPredictions(actualMatches, ratings, rho, host) {
     if (predicted === actual) stageBuckets[stage].correct++;
   }
 
-  return { accuracy: correct / total, logLoss: logLoss / total, buckets, stageBuckets, total };
+  const cal = calibrationReport(predictions);
+  return { accuracy: correct / total, logLoss: logLoss / total, brier: cal.brier, ece: cal.ece, buckets, stageBuckets, total };
 }
 
 /** Run the full backtest for a single year. */
@@ -238,6 +242,8 @@ async function runBacktest(year, { log = console.log, iterations = 10000 } = {})
   log(`  Group stage: ${(matchEval.stageBuckets.group.correct / matchEval.stageBuckets.group.n * 100).toFixed(1)}%`);
   log(`  Knockout: ${(matchEval.stageBuckets.knockout.correct / matchEval.stageBuckets.knockout.n * 100).toFixed(1)}%`);
   log(`Average log-loss: ${matchEval.logLoss.toFixed(3)}`);
+  log(`Brier score: ${matchEval.brier.toFixed(3)} (lower is better, 0 = perfect)`);
+  log(`Expected Calibration Error: ${matchEval.ece.toFixed(3)} (lower is better)`);
 
   log('\nCalibration by favorite probability bucket:');
   const buckets = Object.entries(matchEval.buckets).sort((a, b) => parseFloat(a[0]) - parseFloat(b[0]));
