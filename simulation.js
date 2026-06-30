@@ -9,8 +9,12 @@
  * Zero third-party dependencies.
  */
 
+const fs = require('fs');
+const path = require('path');
 const { GROUPS } = require('./worldcup2026');
 const { DEFAULT_RHO, sampleDixonColes, jointProbabilityMatrix } = require('./dixoncoles');
+const { rng, setRng, resetRng, makeIterationRng } = require('./rng');
+const PROGRESS_FILE = path.join(process.cwd(), '.polycup_progress.json');
 
 const TOTAL_EXPECTED_GOALS = 2.5; // total xG split between the two sides
 const ELO_GOAL_SCALE = 400; // sensitivity of the goal split to the Elo gap
@@ -54,7 +58,7 @@ function samplePoisson(lambda) {
   let p = 1;
   do {
     k++;
-    p *= Math.random();
+    p *= rng();
   } while (p > L);
   return k - 1;
 }
@@ -117,7 +121,7 @@ function knockoutWinner(eloA, eloB, hostA, hostB, rho = DEFAULT_RHO) {
   // Penalty shootout, lightly weighted by Elo (not a coin flip).
   const e = eloExpected(eloA + (hostA ? HOST_ELO_BONUS : 0), eloB + (hostB ? HOST_ELO_BONUS : 0));
   const pA = 0.5 + (e - 0.5) * PEN_DAMPING;
-  return Math.random() < pA ? 0 : 1;
+  return rng() < pA ? 0 : 1;
 }
 
 // --- Bracket template (official FIFA 2026 fixed seeding) -------------------
@@ -394,7 +398,7 @@ function simTournamentDetailed(ratings, rho = DEFAULT_RHO) {
  * Run the Monte Carlo simulation `iterations` times and tally how often each
  * team reaches each stage. Returns per-team probabilities (0..1).
  */
-function runMonteCarlo(eloModel, iterations = 10000, { rho = DEFAULT_RHO, onProgress } = {}) {
+function runMonteCarlo(eloModel, iterations = 10000, { rho = DEFAULT_RHO, onProgress, seed, resume = false } = {}) {
   const allTeams = Object.values(GROUPS).flat();
   // Snapshot ratings into a plain map for speed.
   const ratings = {};
@@ -405,8 +409,33 @@ function runMonteCarlo(eloModel, iterations = 10000, { rho = DEFAULT_RHO, onProg
     tally[t] = { r32: 0, r16: 0, qf: 0, sf: 0, final: 0, champion: 0 };
   }
 
-  for (let i = 0; i < iterations; i++) {
+  let startIteration = 0;
+  if (seed && resume) {
+    try {
+      const saved = JSON.parse(fs.readFileSync(PROGRESS_FILE, 'utf8'));
+      if (saved && saved.seed === String(seed) && saved.iterations === iterations) {
+        startIteration = saved.completed || 0;
+        for (const t of allTeams) {
+          if (saved.tally && saved.tally[t]) Object.assign(tally[t], saved.tally[t]);
+        }
+      }
+    } catch (e) {
+      // No resumable progress found; start from scratch.
+    }
+  }
+
+  if (seed) {
+    try {
+      fs.writeFileSync(PROGRESS_FILE, JSON.stringify({ seed: String(seed), iterations, completed: startIteration, tally }));
+    } catch (e) {
+      // Progress file is best-effort; ignore write failures.
+    }
+  }
+
+  for (let i = startIteration; i < iterations; i++) {
+    if (seed) setRng(makeIterationRng(seed, i));
     const reached = simTournament(ratings, rho);
+    if (seed) resetRng();
     for (const [team, stage] of Object.entries(reached)) {
       const r = STAGE_RANK[stage];
       const acc = tally[team];
@@ -417,7 +446,18 @@ function runMonteCarlo(eloModel, iterations = 10000, { rho = DEFAULT_RHO, onProg
       if (r >= STAGE_RANK.FINAL) acc.final++;
       if (r >= STAGE_RANK.CHAMPION) acc.champion++;
     }
+    if (seed && (i + 1) % 1000 === 0) {
+      try {
+        fs.writeFileSync(PROGRESS_FILE, JSON.stringify({ seed: String(seed), iterations, completed: i + 1, tally }));
+      } catch (e) {}
+    }
     if (onProgress && (i + 1) % 1000 === 0) onProgress(i + 1, iterations);
+  }
+
+  if (seed && fs.existsSync(PROGRESS_FILE)) {
+    try {
+      fs.unlinkSync(PROGRESS_FILE);
+    } catch (e) {}
   }
 
   const result = {};
@@ -441,7 +481,7 @@ function runMonteCarlo(eloModel, iterations = 10000, { rho = DEFAULT_RHO, onProg
  *   odds: per-team stage probabilities (same shape as runMonteCarlo)
  *   bracket: match number -> { a: { team: count }, b: { team: count }, winner: { team: count } }
  */
-function runMonteCarloDetailed(eloModel, iterations = 10000, { rho = DEFAULT_RHO, onProgress } = {}) {
+function runMonteCarloDetailed(eloModel, iterations = 10000, { rho = DEFAULT_RHO, onProgress, seed } = {}) {
   const allTeams = Object.values(GROUPS).flat();
   const ratings = {};
   for (const t of allTeams) ratings[t] = eloModel.getRating(t);
@@ -457,7 +497,9 @@ function runMonteCarloDetailed(eloModel, iterations = 10000, { rho = DEFAULT_RHO
   }
 
   for (let i = 0; i < iterations; i++) {
+    if (seed) setRng(makeIterationRng(seed, i));
     const { reached, bracket } = simTournamentDetailed(ratings, rho);
+    if (seed) resetRng();
     for (const [team, stage] of Object.entries(reached)) {
       const r = STAGE_RANK[stage];
       const acc = tally[team];

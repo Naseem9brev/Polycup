@@ -102,19 +102,59 @@ for (const [alias, team] of Object.entries(ALIASES)) {
 }
 
 /**
+ * Simple Levenshtein edit distance.
+ */
+function levenshtein(a, b) {
+  if (a.length < b.length) return levenshtein(b, a);
+  if (b.length === 0) return a.length;
+
+  const previous = new Array(b.length + 1).fill(0).map((_, i) => i);
+  for (let i = 0; i < a.length; i++) {
+    const current = [i + 1];
+    for (let j = 0; j < b.length; j++) {
+      const insert = previous[j + 1] + 1;
+      const del = current[j] + 1;
+      const sub = a[i] === b[j] ? previous[j] : previous[j] + 1;
+      current.push(Math.min(insert, del, sub));
+    }
+    for (let j = 0; j <= b.length; j++) previous[j] = current[j];
+  }
+  return previous[b.length];
+}
+
+/**
  * Resolves loose user input to a canonical display name, or null if unknown.
- * Tries: exact normalized match -> alias match -> unique prefix match.
+ * Tries: exact normalized match -> alias match -> unique prefix match ->
+ * edit-distance fuzzy match (short inputs require a smaller absolute distance).
  */
 function resolveTeam(input) {
   if (!input) return null;
   const key = normalize(input);
+  if (key.length === 0) return null;
   if (NORMALIZED_LOOKUP[key]) return NORMALIZED_LOOKUP[key];
 
   // Unique prefix match against canonical names (e.g. "switz" -> Switzerland).
   const prefixHits = TEAMS.filter((t) => normalize(t).startsWith(key));
   if (prefixHits.length === 1) return prefixHits[0];
 
-  return null;
+  // Fuzzy fallback: find the nearest canonical name or alias by edit distance.
+  const threshold = key.length <= 4 ? 1 : 2;
+  let best = null;
+  let bestDistance = Infinity;
+  const candidates = [
+    ...TEAMS.map((t) => ({ name: t, key: normalize(t) })),
+    ...Object.entries(ALIASES).map(([alias, team]) => ({ name: alias, key: normalize(alias), team })),
+  ];
+
+  for (const c of candidates) {
+    const dist = levenshtein(key, c.key);
+    if (dist <= threshold && dist < bestDistance) {
+      bestDistance = dist;
+      best = c.team || c.name;
+    }
+  }
+
+  return best;
 }
 
 module.exports = {

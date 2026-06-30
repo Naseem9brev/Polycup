@@ -1,6 +1,12 @@
 # Polycup local dataset cache
 .cache_results.csv
 
+# Polycup seeded-run progress checkpoint
+.polycup_progress.json
+
+# Polycup project-local config (user-specific)
+.polycuprc.json
+
 # SEA build artifacts
 sea-config.json
 dist/
