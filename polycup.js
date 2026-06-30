@@ -17,6 +17,7 @@ const readline = require('readline');
 const { buildEloModel } = require('./elo');
 const { runMonteCarlo, predictMatch, expectedGoals, HOSTS } = require('./simulation');
 const { estimateRhoFromDataset } = require('./dixoncoles');
+const { runBacktest, runAllBacktests } = require('./backtest');
 const { GROUPS, TEAMS, GROUP_OF, resolveTeam } = require('./worldcup2026');
 
 const DISCLAIMER =
@@ -94,6 +95,7 @@ Commands:
   <team1> vs <team2>   head-to-head match prediction (e.g. "Brazil vs France")
   titles               reprint the full title-odds table
   teams                list all 48 qualified teams and their groups
+  backtest [year|all]  validate against 2018 or 2022 World Cup (e.g. "backtest 2022")
   help                 show this help
   quit / exit          leave Polycup
 
@@ -124,27 +126,57 @@ function startPrompt(elo, odds, rho) {
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
   rl.setPrompt('> ');
   console.log('Type "help" for commands, "quit" to exit.');
-  rl.prompt();
+
+  const queue = [];
+  let busy = false;
+
+  async function processNext() {
+    if (busy || queue.length === 0) return;
+    busy = true;
+    const line = queue.shift();
+    const lower = line.toLowerCase();
+
+    if (lower === 'quit' || lower === 'exit' || lower === 'q') {
+      busy = false;
+      rl.close();
+      return;
+    }
+    else if (lower === 'help' || lower === '?') console.log(HELP);
+    else if (lower === 'titles' || lower === 'odds') printTitleTable(odds);
+    else if (lower === 'teams' || lower === 'groups') printTeams();
+    else if (lower.startsWith('backtest')) {
+      const rest = lower.replace('backtest', '').trim();
+      const yearArg = rest || '2022';
+      try {
+        if (yearArg === 'all') await runAllBacktests({ log: (m) => console.log(m) });
+        else await runBacktest(Number(yearArg), { log: (m) => console.log(m) });
+      } catch (e) {
+        console.log(`  Backtest error: ${e.message}`);
+      }
+    }
+    else if (/\s+(?:vs?|v\.?|-)\s+/i.test(line)) handleMatch(elo, line, rho);
+    else console.log('  Unrecognized command. Type "help" for options.');
+
+    busy = false;
+    rl.prompt();
+    processNext();
+  }
 
   rl.on('line', (raw) => {
     const line = raw.trim();
     if (!line) { rl.prompt(); return; }
-    const lower = line.toLowerCase();
-
-    if (lower === 'quit' || lower === 'exit' || lower === 'q') { rl.close(); return; }
-    else if (lower === 'help' || lower === '?') console.log(HELP);
-    else if (lower === 'titles' || lower === 'odds') printTitleTable(odds);
-    else if (lower === 'teams' || lower === 'groups') printTeams();
-    else if (/\s+(?:vs?|v\.?|-)\s+/i.test(line)) handleMatch(elo, line, rho);
-    else console.log('  Unrecognized command. Type "help" for options.');
-
-    rl.prompt();
+    queue.push(line);
+    processNext();
   });
 
   rl.on('close', () => {
+    if (busy) return; // let the current operation finish naturally
     console.log('\nThanks for using Polycup!');
     process.exit(0);
   });
+
+  rl.prompt();
+  processNext();
 }
 
 async function main() {

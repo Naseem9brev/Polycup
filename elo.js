@@ -153,11 +153,12 @@ function parseMatches(text) {
 }
 
 /** Replay all matches and return a { teamName: rating } map. */
-function computeRatings(matches) {
+function computeRatings(matches, beforeDate = null) {
   const ratings = Object.create(null);
   const get = (team) => (team in ratings ? ratings[team] : BASE_RATING);
 
   for (const m of matches) {
+    if (beforeDate && m.date >= beforeDate) continue;
     const rHome = get(m.home);
     const rAway = get(m.away);
     const homeBoost = m.neutral ? 0 : HOME_ADVANTAGE;
@@ -188,7 +189,7 @@ function computeRatings(matches) {
 async function buildEloModel(options = {}) {
   const text = await loadResults(options);
   const matches = parseMatches(text);
-  const ratings = computeRatings(matches);
+  const ratings = computeRatings(matches, options.beforeDate);
 
   /** Current Elo rating for a team by its display name. */
   function getRating(displayName) {
