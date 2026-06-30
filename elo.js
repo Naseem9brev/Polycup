@@ -206,6 +206,8 @@ async function buildEloModel(options = {}) {
 
 module.exports = {
   buildEloModel,
+  loadResults,
+  parseMatches,
   importanceK,
   goalMultiplier,
   parseCsvLine,

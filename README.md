@@ -99,13 +99,14 @@ Per the official FIFA final draw (5 December 2025, Washington, D.C.):
 
 ## How it works
 
-The pipeline is **Elo → expected goals → Poisson → Monte Carlo**, split across
-four files:
+The pipeline is **Elo → expected goals → Dixon-Coles/Poisson → Monte Carlo**, split across
+five files:
 
 | File | Responsibility |
 |---|---|
 | `elo.js` | Downloads/caches the results dataset, replays every played match in chronological order, and computes an Elo strength rating for every national team. |
-| `simulation.js` | Poisson expected-goals model plus Monte Carlo group stage and knockout bracket simulation. |
+| `dixoncoles.js` | Dixon-Coles adjustment for the Poisson goal model, plus data-driven estimation of the dependence parameter ρ from historical matches. |
+| `simulation.js` | Expected-goals model, analytic match prediction, and Monte Carlo group stage + knockout bracket simulation. |
 | `worldcup2026.js` | The 48 qualified teams, their group assignments, and the name mapping between this project's display names and the dataset's spellings (plus loose CLI aliases). |
 | `polycup.js` | The CLI entry point: wires everything together, runs the simulation, renders the title-odds table, and launches the interactive prompt. |
 
@@ -126,10 +127,14 @@ four files:
 - **Expected goals:** the Elo gap between two teams splits ~2.5 total expected
   goals between them (favored team gets the larger share). Host nations (USA,
   Canada, Mexico) get a home-advantage bump.
-- **Match outcome:** each side's goals are drawn independently from a Poisson
-  distribution; win/draw/loss falls out of comparing the draws.
-- **Single match prediction:** computed analytically from the two Poisson
-  distributions (no Monte Carlo needed) — instant in the CLI.
+- **Match outcome:** goals are drawn from a **Dixon-Coles** bivariate Poisson
+  model instead of independent Poissons. This corrects the well-known under-
+  counting of low-scoring draws (0-0, 1-1) and over-counting of 0-1/1-0 results.
+- **Dixon-Coles ρ:** estimated from the cached historical dataset at run time
+  via grid-search maximum likelihood (currently ~-0.04 for recent international
+  matches). Falls back to a literature value if the cache is unavailable.
+- **Single match prediction:** computed analytically from the Dixon-Coles joint
+  distribution (no Monte Carlo needed) — instant in the CLI.
 - **Tournament:** 12 groups of 4 play round-robin; standings use points, then
   goal difference, then goals scored (head-to-head / fair-play are approximated
   by an Elo tiebreak). Top 2 from each group plus the 8 best third-placed teams

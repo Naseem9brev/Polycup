@@ -15,7 +15,8 @@
 
 const readline = require('readline');
 const { buildEloModel } = require('./elo');
-const { runMonteCarlo, predictMatch, HOSTS } = require('./simulation');
+const { runMonteCarlo, predictMatch, expectedGoals, HOSTS } = require('./simulation');
+const { estimateRhoFromDataset } = require('./dixoncoles');
 const { GROUPS, TEAMS, GROUP_OF, resolveTeam } = require('./worldcup2026');
 
 const DISCLAIMER =
@@ -72,10 +73,10 @@ function printTeams() {
 }
 
 /** Render a single head-to-head prediction. */
-function printPrediction(elo, teamA, teamB) {
+function printPrediction(elo, teamA, teamB, rho) {
   const hostA = HOSTS.has(teamA);
   const hostB = HOSTS.has(teamB);
-  const r = predictMatch(elo.getRating(teamA), elo.getRating(teamB), hostA, hostB);
+  const r = predictMatch(elo.getRating(teamA), elo.getRating(teamB), hostA, hostB, rho);
   console.log('');
   console.log(`  ${teamA}  vs  ${teamB}`);
   console.log('  ' + '-'.repeat(40));
@@ -100,7 +101,7 @@ Team names are loose: "Brazil", "BRA" and "bra" all resolve to Brazil.
 ${DISCLAIMER}
 `;
 
-function handleMatch(elo, line) {
+function handleMatch(elo, line, rho) {
   // Split on "vs" / "v" / "-" surrounded by spaces.
   const parts = line.split(/\s+(?:vs?|v\.?|-)\s+/i);
   if (parts.length !== 2) return false;
@@ -115,11 +116,11 @@ function handleMatch(elo, line) {
     console.log('  Please pick two different teams.');
     return true;
   }
-  printPrediction(elo, teamA, teamB);
+  printPrediction(elo, teamA, teamB, rho);
   return true;
 }
 
-function startPrompt(elo, odds) {
+function startPrompt(elo, odds, rho) {
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
   rl.setPrompt('> ');
   console.log('Type "help" for commands, "quit" to exit.');
@@ -134,7 +135,7 @@ function startPrompt(elo, odds) {
     else if (lower === 'help' || lower === '?') console.log(HELP);
     else if (lower === 'titles' || lower === 'odds') printTitleTable(odds);
     else if (lower === 'teams' || lower === 'groups') printTeams();
-    else if (/\s+(?:vs?|v\.?|-)\s+/i.test(line)) handleMatch(elo, line);
+    else if (/\s+(?:vs?|v\.?|-)\s+/i.test(line)) handleMatch(elo, line, rho);
     else console.log('  Unrecognized command. Type "help" for options.');
 
     rl.prompt();
@@ -156,8 +157,11 @@ async function main() {
   const elo = await buildEloModel({ log });
   log(`Computed Elo ratings from ${elo.matchCount.toLocaleString()} historical matches.`);
 
+  const rho = await estimateRhoFromDataset(elo, expectedGoals, { log });
+
   log(`Running ${iterations.toLocaleString()} tournament simulations ...`);
   const odds = runMonteCarlo(elo, iterations, {
+    rho,
     onProgress: (done, total) => {
       process.stdout.write(`\r  simulated ${done.toLocaleString()} / ${total.toLocaleString()}`);
     },
@@ -165,7 +169,7 @@ async function main() {
   process.stdout.write('\r' + ' '.repeat(40) + '\r');
 
   printTitleTable(odds);
-  startPrompt(elo, odds);
+  startPrompt(elo, odds, rho);
 }
 
 main().catch((err) => {
