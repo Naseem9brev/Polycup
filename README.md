@@ -101,7 +101,7 @@ Per the official FIFA final draw (5 December 2025, Washington, D.C.):
 ## How it works
 
 The pipeline is **Elo → expected goals → Dixon-Coles/Poisson → Monte Carlo**, split across
-six files:
+seven files:
 
 | File | Responsibility |
 |---|---|
@@ -109,6 +109,7 @@ six files:
 | `dixoncoles.js` | Dixon-Coles adjustment for the Poisson goal model, plus data-driven estimation of the dependence parameter ρ from historical matches. |
 | `simulation.js` | Expected-goals model, analytic match prediction, and Monte Carlo group stage + knockout bracket simulation. |
 | `backtest.js` | Validates the model against past World Cups (2018 and 2022) by rebuilding pre-tournament Elo ratings and comparing predictions to actual results. |
+| `calibration.js` | Calibration metrics (Brier score, Expected Calibration Error) for the backtest. |
 | `worldcup2026.js` | The 48 qualified teams, their group assignments, and the name mapping between this project's display names and the dataset's spellings (plus loose CLI aliases). |
 | `polycup.js` | The CLI entry point: wires everything together, runs the simulation, renders the title-odds table, and launches the interactive prompt. |
 
@@ -164,7 +165,8 @@ year, it:
 1. Rebuilds Elo ratings using only matches before the tournament started.
 2. Estimates Dixon-Coles ρ from that same pre-tournament data.
 3. Predicts every match outcome (group + knockout) and compares it to the actual
-   result, reporting match-level accuracy and log-loss.
+   result, reporting match-level accuracy, log-loss, **Brier score**, and
+   **Expected Calibration Error (ECE)**.
 4. Runs the knockout bracket using the actual group-stage finishers and reports
    the predicted title odds for the actual champion.
 
@@ -186,10 +188,10 @@ node backtest.js all
 
 Recent results:
 
-- **2022:** 54.7% match-prediction accuracy (62.5% in knockouts), actual champion
-  Argentina was given ~23% title probability.
-- **2018:** 54.7% match-prediction accuracy (43.8% in knockouts), actual champion
-  France was given ~7% title probability.
+- **2022:** 54.7% match-prediction accuracy (62.5% in knockouts), log-loss 1.092,
+  Brier 0.624, ECE 0.142. Actual champion Argentina was given ~23% title probability.
+- **2018:** 54.7% match-prediction accuracy (43.8% in knockouts), log-loss 0.990,
+  Brier 0.582, ECE 0.040. Actual champion France was given ~7% title probability.
 
 ## Data source
 
