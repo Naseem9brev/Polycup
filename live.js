@@ -24,6 +24,7 @@ const {
 } = require('./simulation');
 const { sampleDixonColes, estimateRhoFromDataset } = require('./dixoncoles');
 const { GROUPS, TEAMS } = require('./worldcup2026');
+const { rng, setRng, resetRng, makeIterationRng } = require('./rng');
 
 const MAX_GOALS = 10;
 
@@ -88,7 +89,7 @@ function knockoutWinnerTeam(a, b, ratings, rho) {
   if (gb > ga) return b;
   const e = 1 / (1 + Math.pow(10, ((rB + (hostB ? 65 : 0)) - (rA + (hostA ? 65 : 0))) / 400));
   const pA = 0.5 + (e - 0.5) * 0.5;
-  return Math.random() < pA ? a : b;
+  return rng() < pA ? a : b;
 }
 
 /**
@@ -189,7 +190,7 @@ function simLiveTournament(ratings, rho, played) {
  * Run the live Monte Carlo simulation. Re-downloads the dataset, recomputes
  * Elo ratings, and simulates the remaining 2026 tournament `iterations` times.
  */
-async function runLiveSimulation({ iterations = 10000, log = console.log, onProgress } = {}) {
+async function runLiveSimulation({ iterations = 10000, log = console.log, onProgress, seed } = {}) {
   log('\n=== Live 2026 World Cup simulation ===');
   log('Refreshing dataset ...');
   const { buildEloModel } = require('./elo');
@@ -211,7 +212,9 @@ async function runLiveSimulation({ iterations = 10000, log = console.log, onProg
   for (const t of allTeams) tally[t] = { r32: 0, r16: 0, qf: 0, sf: 0, final: 0, champion: 0 };
 
   for (let i = 0; i < iterations; i++) {
+    if (seed) setRng(makeIterationRng(seed, i));
     const reached = simLiveTournament(ratings, rho, played2026);
+    if (seed) resetRng();
     for (const [team, stage] of Object.entries(reached)) {
       const rank = { R32: 1, R16: 2, QF: 3, SF: 4, FINAL: 5, CHAMPION: 6 }[stage];
       const acc = tally[team];

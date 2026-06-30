@@ -14,6 +14,7 @@ const { loadResults, parseMatches } = require('./elo');
 const { expectedGoals, HOSTS } = require('./simulation');
 const { sampleDixonColes, jointProbabilityMatrix, estimateRhoFromDataset } = require('./dixoncoles');
 const { report: calibrationReport } = require('./calibration');
+const { rng, setRng, resetRng, makeIterationRng } = require('./rng');
 
 const MAX_GOALS = 10;
 
@@ -120,7 +121,7 @@ function simulateKnockout(standings, ratings, rho, host) {
     if (gb > ga) return b;
     const e = 1 / (1 + Math.pow(10, ((rB + (hostB ? 65 : 0)) - (rA + (hostA ? 65 : 0))) / 400));
     const pA = 0.5 + (e - 0.5) * 0.5;
-    return Math.random() < pA ? a : b;
+    return rng() < pA ? a : b;
   }
 
   const r16 = R16_PAIRS.map(([a, b]) => win(positions[a], positions[b]));
@@ -132,14 +133,16 @@ function simulateKnockout(standings, ratings, rho, host) {
 }
 
 /** Run many knockout simulations and tally stage probabilities. */
-function runBacktestSim(standings, ratings, rho, host, iterations = 10000) {
+function runBacktestSim(standings, ratings, rho, host, iterations = 10000, seed) {
   const tally = {};
   for (const table of Object.values(standings)) {
     for (const t of table) tally[t.team] = { r16: 0, qf: 0, sf: 0, final: 0, champion: 0 };
   }
 
   for (let i = 0; i < iterations; i++) {
+    if (seed) setRng(makeIterationRng(seed, i));
     const res = simulateKnockout(standings, ratings, rho, host);
+    if (seed) resetRng();
     for (const t of res.r16) tally[t].r16++;
     for (const t of res.qf) tally[t].qf++;
     for (const t of res.sf) tally[t].sf++;
@@ -218,7 +221,7 @@ function evaluateMatchPredictions(actualMatches, ratings, rho, host) {
 }
 
 /** Run the full backtest for a single year. */
-async function runBacktest(year, { log = console.log, iterations = 10000 } = {}) {
+async function runBacktest(year, { log = console.log, iterations = 10000, seed } = {}) {
   const config = PAST_TOURNAMENTS[year];
   if (!config) throw new Error(`Unknown year: ${year}`);
 
@@ -253,7 +256,7 @@ async function runBacktest(year, { log = console.log, iterations = 10000 } = {})
     log(`  ${lo.toFixed(0).padStart(2)}-${hi.toFixed(0).padStart(2)}%: ${v.correct}/${v.n} = ${(v.correct / v.n * 100).toFixed(1)}%`);
   }
 
-  const sim = runBacktestSim(standings, elo.ratings, rho, config.host, iterations);
+  const sim = runBacktestSim(standings, elo.ratings, rho, config.host, iterations, seed);
   const sorted = Object.entries(sim).sort((a, b) => b[1].champion - a[1].champion);
   log('\nTop 10 predicted title odds (* = actual champion):');
   for (const [team, p] of sorted.slice(0, 10)) {
@@ -266,9 +269,9 @@ async function runBacktest(year, { log = console.log, iterations = 10000 } = {})
   return { matchEval, sim, actualChampion, championProb: champProb };
 }
 
-async function runAllBacktests({ log = console.log, iterations = 10000 } = {}) {
+async function runAllBacktests({ log = console.log, iterations = 10000, seed } = {}) {
   for (const year of Object.keys(PAST_TOURNAMENTS)) {
-    await runBacktest(Number(year), { log, iterations });
+    await runBacktest(Number(year), { log, iterations, seed });
   }
 }
 

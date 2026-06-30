@@ -58,6 +58,43 @@ node polycup.js --sims=50000
 node polycup.js 2000
 ```
 
+### Options & configuration
+
+| Flag | Purpose |
+|---|---|
+| `--sims=N` (or a bare number) | number of Monte Carlo iterations (default 10,000) |
+| `--seed=VALUE` | seed the RNG for fully reproducible runs |
+| `--resume` | resume an interrupted seeded run from `.polycup_progress.json` |
+| `--rho=VALUE` | override the estimated Dixon-Coles ρ |
+| `--format=json` | print title odds as JSON and exit (no prompt) |
+| `--favorites=A,B` | highlight favorite teams in the odds table |
+| `--no-config` | ignore config files for this run |
+
+Defaults can be stored in a config file so you don't have to pass flags every
+time. Polycup reads, in order (later overrides earlier, and CLI flags override
+both):
+
+1. `~/.polycup/config.json` — global user defaults
+2. `.polycuprc.json` — project-local defaults in the working directory
+
+```json
+{
+  "sims": 20000,
+  "seed": "wc2026",
+  "favorites": ["Brazil", "France"],
+  "format": "table"
+}
+```
+
+Reproducibility: with `--seed`, the same seed always produces identical odds.
+A seeded run also checkpoints progress every 1,000 iterations, so a long run
+interrupted with Ctrl-C can be continued with `--seed=... --resume`.
+
+Team names are fuzzy-matched: in addition to aliases and prefixes, common typos
+(`Brazl`, `Frnace`, `Swizerland`) resolve to the intended team via edit distance.
+The interactive prompt also keeps a command history (up-arrow) in
+`~/.polycup_history`.
+
 ### First run vs. cached runs
 
 - **First run:** downloads the historical results dataset
@@ -121,7 +158,7 @@ Per the official FIFA final draw (5 December 2025, Washington, D.C.):
 ## How it works
 
 The pipeline is **Elo → expected goals → Dixon-Coles/Poisson → Monte Carlo**, split across
-eight files:
+ten files:
 
 | File | Responsibility |
 |---|---|
@@ -131,7 +168,9 @@ eight files:
 | `backtest.js` | Validates the model against past World Cups (2018 and 2022) by rebuilding pre-tournament Elo ratings and comparing predictions to actual results. |
 | `calibration.js` | Calibration metrics (Brier score, Expected Calibration Error) for the backtest. |
 | `live.js` | During the tournament, re-downloads the latest results, locks in played matches, and only simulates the remaining fixtures. |
-| `worldcup2026.js` | The 48 qualified teams, their group assignments, and the name mapping between this project's display names and the dataset's spellings (plus loose CLI aliases). |
+| `config.js` | Loads defaults from `~/.polycup/config.json` and `.polycuprc.json`, validated and merged under CLI flags. |
+| `rng.js` | Seedable pseudo-random number generator (sfc32) with a swappable global hook, enabling reproducible and resumable Monte Carlo runs. |
+| `worldcup2026.js` | The 48 qualified teams, their group assignments, the name mapping between this project's display names and the dataset's spellings (plus loose CLI aliases), and fuzzy typo matching. |
 | `polycup.js` | The CLI entry point: wires everything together, runs the simulation, renders the title-odds table, and launches the interactive prompt. |
 
 ### Elo model (`elo.js`)

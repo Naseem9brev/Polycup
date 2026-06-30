@@ -18,6 +18,7 @@
 const DEFAULT_RHO = 0.075;
 
 const { loadResults, parseMatches } = require('./elo');
+const { rng } = require('./rng');
 
 /** Poisson probability mass for exactly k events. */
 function poissonPmf(lambda, k) {
@@ -66,7 +67,7 @@ function jointProbabilityMatrix(lambdaA, lambdaB, rho, maxGoals) {
  */
 function sampleDixonColes(lambdaA, lambdaB, rho = DEFAULT_RHO, maxGoals = 10) {
   const probs = jointProbabilityMatrix(lambdaA, lambdaB, rho, maxGoals);
-  const r = Math.random();
+  const r = rng();
   let cum = 0;
   const n = maxGoals + 1;
   for (let k = 0; k < probs.length; k++) {
