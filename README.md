@@ -139,6 +139,11 @@ four files:
   runner-up sit in opposite halves so they can only meet again in the final.
   FIFA's exact 495-row third-place lookup table is approximated by a valid
   constraint-respecting assignment.
+- **Knockout calibration:** in knockout matches, the favorite's share of the
+  ~2.5 xG is capped at 70%. Without this, large Elo gaps produced a simulated
+  underdog win rate of only ~17%, well below the historical World Cup knockout
+  rate of ~25–35%. The cap keeps the model closer to real tournament behavior
+  while still letting the Elo gap matter.
 - **Knockout ties** are decided by a penalty shootout lightly weighted by Elo
   (not a coin flip, not deterministic).
 - The full tournament runs **10,000 times by default**, tallying how often each

@@ -17,6 +17,12 @@ const HOST_ELO_BONUS = 65; // host-nation home advantage, in Elo points
 const PEN_DAMPING = 0.5; // shootouts keep only half the Elo edge (more random)
 const MAX_GOALS = 10; // cap for the analytic scoreline grid
 
+// Knockout calibration: historical World Cup underdogs win ~25-35% of knockout
+// matches. Without a cap, the Elo gap produces too lopsided an xG split and the
+// simulated rate drops to ~17%. Capping the favorite's share keeps knockouts
+// competitive while still respecting the rating gap.
+const KNOCKOUT_MAX_FAV_SHARE = 0.70; // favorite can claim at most 70% of xG
+
 const HOSTS = new Set(['USA', 'Canada', 'Mexico']);
 
 // --- Expected goals & Poisson ---------------------------------------------
@@ -24,12 +30,19 @@ const HOSTS = new Set(['USA', 'Canada', 'Mexico']);
 /**
  * Split ~2.5 expected goals between two teams based on their Elo gap.
  * `hostA`/`hostB` apply the host-nation home bonus where relevant.
+ * In knockout matches, the favorite's share is capped to prevent blowout xG
+ * splits that under-represent real tournament upsets.
  */
-function expectedGoals(eloA, eloB, hostA = false, hostB = false) {
+function expectedGoals(eloA, eloB, hostA = false, hostB = false, knockout = false) {
   const adjA = eloA + (hostA ? HOST_ELO_BONUS : 0);
   const adjB = eloB + (hostB ? HOST_ELO_BONUS : 0);
   const diff = adjA - adjB;
-  const shareA = 1 / (1 + Math.pow(10, -diff / ELO_GOAL_SCALE));
+  let shareA = 1 / (1 + Math.pow(10, -diff / ELO_GOAL_SCALE));
+  if (knockout) {
+    const min = 1 - KNOCKOUT_MAX_FAV_SHARE;
+    const max = KNOCKOUT_MAX_FAV_SHARE;
+    shareA = Math.max(min, Math.min(max, shareA));
+  }
   return [TOTAL_EXPECTED_GOALS * shareA, TOTAL_EXPECTED_GOALS * (1 - shareA)];
 }
 
@@ -107,7 +120,9 @@ function simMatch(eloA, eloB, hostA, hostB) {
 
 /** Decide a knockout tie. Returns winner index (0 = A, 1 = B). */
 function knockoutWinner(eloA, eloB, hostA, hostB) {
-  const { ga, gb } = simMatch(eloA, eloB, hostA, hostB);
+  const [lambdaA, lambdaB] = expectedGoals(eloA, eloB, hostA, hostB, true);
+  const ga = samplePoisson(lambdaA);
+  const gb = samplePoisson(lambdaB);
   if (ga > gb) return 0;
   if (gb > ga) return 1;
   // Penalty shootout, lightly weighted by Elo (not a coin flip).
