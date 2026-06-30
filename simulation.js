@@ -372,4 +372,13 @@ module.exports = {
   simTournament,
   runMonteCarlo,
   HOSTS,
+  R32_TEMPLATE,
+  LATER_ROUNDS,
+  ROUND_OF,
+  GROUP_LETTERS,
+  compareStandings,
+  simGroup,
+  emptyStanding,
+  assignThirds,
+  THIRD_SLOTS,
 };

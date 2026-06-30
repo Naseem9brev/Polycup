@@ -61,6 +61,7 @@ After the simulation runs and prints the title-odds table, you get a prompt:
 > titles               # reprint the full title-odds table
 > teams                # list all 48 qualified teams + groups
 > backtest 2022        # validate against the 2022 World Cup
+> live                 # re-download latest results and lock played matches
 > help                 # show available commands
 > quit                 # exit
 ```
@@ -110,6 +111,7 @@ seven files:
 | `simulation.js` | Expected-goals model, analytic match prediction, and Monte Carlo group stage + knockout bracket simulation. |
 | `backtest.js` | Validates the model against past World Cups (2018 and 2022) by rebuilding pre-tournament Elo ratings and comparing predictions to actual results. |
 | `calibration.js` | Calibration metrics (Brier score, Expected Calibration Error) for the backtest. |
+| `live.js` | During the tournament, re-downloads the latest results, locks in played matches, and only simulates the remaining fixtures. |
 | `worldcup2026.js` | The 48 qualified teams, their group assignments, and the name mapping between this project's display names and the dataset's spellings (plus loose CLI aliases). |
 | `polycup.js` | The CLI entry point: wires everything together, runs the simulation, renders the title-odds table, and launches the interactive prompt. |
 
@@ -192,6 +194,21 @@ Recent results:
   Brier 0.624, ECE 0.142. Actual champion Argentina was given ~23% title probability.
 - **2018:** 54.7% match-prediction accuracy (43.8% in knockouts), log-loss 0.990,
   Brier 0.582, ECE 0.040. Actual champion France was given ~7% title probability.
+
+### Live simulation during the tournament (`live.js`)
+
+Once the tournament starts, the `live` command re-downloads the latest dataset,
+locks in every match that has already been played, and only simulates the
+remaining fixtures. This gives updated title odds that respect the actual group
+standings and any knockout results already in the book.
+
+```
+> live
+```
+
+It uses the same 2026 bracket template, group standings, and third-place
+assignment as the main simulation, so the locked results flow naturally into
+the rest of the bracket.
 
 ## Data source
 

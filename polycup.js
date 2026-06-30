@@ -18,6 +18,7 @@ const { buildEloModel } = require('./elo');
 const { runMonteCarlo, predictMatch, expectedGoals, HOSTS } = require('./simulation');
 const { estimateRhoFromDataset } = require('./dixoncoles');
 const { runBacktest, runAllBacktests } = require('./backtest');
+const { runLiveSimulation } = require('./live');
 const { GROUPS, TEAMS, GROUP_OF, resolveTeam } = require('./worldcup2026');
 
 const DISCLAIMER =
@@ -96,6 +97,7 @@ Commands:
   titles               reprint the full title-odds table
   teams                list all 48 qualified teams and their groups
   backtest [year|all]  validate against 2018 or 2022 World Cup (e.g. "backtest 2022")
+  live                 re-download results, lock played matches, simulate rest
   help                 show this help
   quit / exit          leave Polycup
 
@@ -129,16 +131,26 @@ function startPrompt(elo, odds, rho) {
 
   const queue = [];
   let busy = false;
+  let closeRequested = false;
+
+  function finish() {
+    console.log('\nThanks for using Polycup!');
+    process.exit(0);
+  }
 
   async function processNext() {
-    if (busy || queue.length === 0) return;
+    if (busy || queue.length === 0) {
+      if (closeRequested && !busy) finish();
+      return;
+    }
     busy = true;
     const line = queue.shift();
     const lower = line.toLowerCase();
 
     if (lower === 'quit' || lower === 'exit' || lower === 'q') {
       busy = false;
-      rl.close();
+      if (closeRequested) finish();
+      else rl.close();
       return;
     }
     else if (lower === 'help' || lower === '?') console.log(HELP);
@@ -154,11 +166,29 @@ function startPrompt(elo, odds, rho) {
         console.log(`  Backtest error: ${e.message}`);
       }
     }
+    else if (lower === 'live') {
+      try {
+        const liveOdds = await runLiveSimulation({
+          log: (m) => console.log(m),
+          onProgress: (done, total) => {
+            process.stdout.write(`\r  simulated ${done.toLocaleString()} / ${total.toLocaleString()}`);
+          },
+        });
+        process.stdout.write('\r' + ' '.repeat(40) + '\r');
+        printTitleTable(liveOdds);
+      } catch (e) {
+        console.log(`  Live error: ${e.message}`);
+      }
+    }
     else if (/\s+(?:vs?|v\.?|-)\s+/i.test(line)) handleMatch(elo, line, rho);
     else console.log('  Unrecognized command. Type "help" for options.');
 
     busy = false;
-    rl.prompt();
+    if (closeRequested) {
+      finish();
+      return;
+    }
+    try { rl.prompt(); } catch (e) { return; }
     processNext();
   }
 
@@ -170,9 +200,8 @@ function startPrompt(elo, odds, rho) {
   });
 
   rl.on('close', () => {
-    if (busy) return; // let the current operation finish naturally
-    console.log('\nThanks for using Polycup!');
-    process.exit(0);
+    closeRequested = true;
+    if (!busy) finish();
   });
 
   rl.prompt();
