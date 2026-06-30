@@ -108,13 +108,17 @@ async function download() {
   return text;
 }
 
-/** Load the dataset from cache, downloading it on first run. */
-async function loadResults({ log = () => {} } = {}) {
-  if (fs.existsSync(CACHE_FILE)) {
+/** Load the dataset from cache, downloading it on first run (or if forced). */
+async function loadResults({ log = () => {}, forceDownload = false } = {}) {
+  if (!forceDownload && fs.existsSync(CACHE_FILE)) {
     log(`Loading cached results from ${path.basename(CACHE_FILE)} ...`);
     return fs.readFileSync(CACHE_FILE, 'utf8');
   }
-  log('No cache found. Downloading historical results (first run only) ...');
+  if (forceDownload) {
+    log('Refreshing dataset from GitHub ...');
+  } else {
+    log('No cache found. Downloading historical results (first run only) ...');
+  }
   const text = await download();
   log(`Downloaded and cached ${path.basename(CACHE_FILE)}.`);
   return text;
@@ -122,9 +126,9 @@ async function loadResults({ log = () => {} } = {}) {
 
 /**
  * Parse the CSV text into match records, skipping the header and any fixture
- * that has not been played yet (NA / blank scores).
+ * that has not been played yet (NA / blank scores) unless includeUnplayed is true.
  */
-function parseMatches(text) {
+function parseMatches(text, includeUnplayed = false) {
   const lines = text.split(/\r?\n/);
   const matches = [];
   for (let i = 1; i < lines.length; i++) {
@@ -133,10 +137,11 @@ function parseMatches(text) {
     const f = parseCsvLine(line);
     if (f.length < 9) continue;
     const [date, home, away, hs, as, tournament, , , neutral] = f;
-    if (hs === 'NA' || as === 'NA' || hs === '' || as === '') continue; // not played
-    const homeScore = Number(hs);
-    const awayScore = Number(as);
-    if (!Number.isFinite(homeScore) || !Number.isFinite(awayScore)) continue;
+    const unplayed = hs === 'NA' || as === 'NA' || hs === '' || as === '';
+    if (unplayed && !includeUnplayed) continue;
+    const homeScore = unplayed ? 'NA' : Number(hs);
+    const awayScore = unplayed ? 'NA' : Number(as);
+    if (!unplayed && (!Number.isFinite(homeScore) || !Number.isFinite(awayScore))) continue;
     matches.push({
       date,
       home,
@@ -145,6 +150,7 @@ function parseMatches(text) {
       awayScore,
       tournament,
       neutral: String(neutral).trim().toUpperCase() === 'TRUE',
+      played: !unplayed,
     });
   }
   // Dataset is already chronological, but sort defensively (oldest -> newest).
