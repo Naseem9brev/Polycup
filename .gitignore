@@ -1,3 +1,6 @@
+# Polycup local dataset cache
+.cache_results.csv
+
 # Logs
 logs
 *.log
