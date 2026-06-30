@@ -60,6 +60,7 @@ After the simulation runs and prints the title-odds table, you get a prompt:
 > Brazil vs France     # head-to-head match prediction
 > titles               # reprint the full title-odds table
 > teams                # list all 48 qualified teams + groups
+> backtest 2022        # validate against the 2022 World Cup
 > help                 # show available commands
 > quit                 # exit
 ```
@@ -100,13 +101,14 @@ Per the official FIFA final draw (5 December 2025, Washington, D.C.):
 ## How it works
 
 The pipeline is **Elo → expected goals → Dixon-Coles/Poisson → Monte Carlo**, split across
-five files:
+six files:
 
 | File | Responsibility |
 |---|---|
 | `elo.js` | Downloads/caches the results dataset, replays every played match in chronological order, and computes an Elo strength rating for every national team. |
 | `dixoncoles.js` | Dixon-Coles adjustment for the Poisson goal model, plus data-driven estimation of the dependence parameter ρ from historical matches. |
 | `simulation.js` | Expected-goals model, analytic match prediction, and Monte Carlo group stage + knockout bracket simulation. |
+| `backtest.js` | Validates the model against past World Cups (2018 and 2022) by rebuilding pre-tournament Elo ratings and comparing predictions to actual results. |
 | `worldcup2026.js` | The 48 qualified teams, their group assignments, and the name mapping between this project's display names and the dataset's spellings (plus loose CLI aliases). |
 | `polycup.js` | The CLI entry point: wires everything together, runs the simulation, renders the title-odds table, and launches the interactive prompt. |
 
@@ -153,6 +155,41 @@ five files:
   (not a coin flip, not deterministic).
 - The full tournament runs **10,000 times by default**, tallying how often each
   team reaches each stage.
+
+### Backtesting (`backtest.js`)
+
+The model can be validated against the 2018 and 2022 FIFA World Cups. For each
+year, it:
+
+1. Rebuilds Elo ratings using only matches before the tournament started.
+2. Estimates Dixon-Coles ρ from that same pre-tournament data.
+3. Predicts every match outcome (group + knockout) and compares it to the actual
+   result, reporting match-level accuracy and log-loss.
+4. Runs the knockout bracket using the actual group-stage finishers and reports
+   the predicted title odds for the actual champion.
+
+Run it from the interactive prompt:
+
+```
+> backtest 2022
+> backtest 2018
+> backtest all
+```
+
+Or standalone:
+
+```bash
+node backtest.js 2022
+node backtest.js 2018
+node backtest.js all
+```
+
+Recent results:
+
+- **2022:** 54.7% match-prediction accuracy (62.5% in knockouts), actual champion
+  Argentina was given ~23% title probability.
+- **2018:** 54.7% match-prediction accuracy (43.8% in knockouts), actual champion
+  France was given ~7% title probability.
 
 ## Data source
 
