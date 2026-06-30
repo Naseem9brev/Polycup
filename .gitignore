@@ -1,6 +1,10 @@
 # Polycup local dataset cache
 .cache_results.csv
 
+# SEA build artifacts
+sea-config.json
+dist/
+
 # Logs
 logs
 *.log
