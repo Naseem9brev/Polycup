@@ -1,4 +1,16 @@
-# Polycup
+<p align="center">
+  ⚽🏆🇺🇸🇲🇽🇨🇦🇧🇷🇦🇷🇫🇷🇩🇪🇪🇸🇳🇱🇵🇹🇮🇹🇧🇪🇺🇾🇭🇷🇯🇵🇰🇷🇲🇦⚽🏆
+</p>
+
+<h1 align="center">⚽ Polycup 🏆</h1>
+
+<p align="center">
+  <strong>Node.js · Elo · Dixon-Coles · Poisson · Monte Carlo</strong>
+</p>
+
+<p align="center">
+  🏆🇫🇷⚽🇧🇷🇦🇷🇩🇪🇺🇸🇲🇽🇨🇦🇪🇸🇳🇱🇵🇹🇮🇹🇧🇪🇺🇾🇭🇷🇯🇵🇰🇷🇲🇦⚽🏆
+</p>
 
 A dependency-free Node.js CLI that predicts the **2026 FIFA World Cup**. It
 computes Elo ratings from ~49,000 historical international matches, feeds them
