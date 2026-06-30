@@ -10,6 +10,7 @@
  */
 
 const { GROUPS } = require('./worldcup2026');
+const { DEFAULT_RHO, sampleDixonColes, jointProbabilityMatrix } = require('./dixoncoles');
 
 const TOTAL_EXPECTED_GOALS = 2.5; // total xG split between the two sides
 const ELO_GOAL_SCALE = 400; // sensitivity of the goal split to the Elo gap
@@ -58,13 +59,6 @@ function samplePoisson(lambda) {
   return k - 1;
 }
 
-/** Poisson probability mass for exactly k events. */
-function poissonPmf(lambda, k) {
-  let logp = -lambda + k * Math.log(lambda);
-  for (let i = 2; i <= k; i++) logp -= Math.log(i);
-  return Math.exp(logp);
-}
-
 /** Elo expected score for A (0..1). */
 function eloExpected(eloA, eloB) {
   return 1 / (1 + Math.pow(10, (eloB - eloA) / 400));
@@ -77,27 +71,23 @@ function eloExpected(eloA, eloB) {
  * loss probabilities, each side's expected goals and the single most likely
  * exact scoreline.
  */
-function predictMatch(eloA, eloB, hostA = false, hostB = false) {
+function predictMatch(eloA, eloB, hostA = false, hostB = false, rho = DEFAULT_RHO) {
   const [lambdaA, lambdaB] = expectedGoals(eloA, eloB, hostA, hostB);
-  const pmfA = [];
-  const pmfB = [];
-  for (let k = 0; k <= MAX_GOALS; k++) {
-    pmfA.push(poissonPmf(lambdaA, k));
-    pmfB.push(poissonPmf(lambdaB, k));
-  }
+  const probs = jointProbabilityMatrix(lambdaA, lambdaB, rho, MAX_GOALS);
 
   let pWin = 0;
   let pDraw = 0;
   let pLoss = 0;
   let best = { p: -1, a: 0, b: 0 };
-  for (let i = 0; i <= MAX_GOALS; i++) {
-    for (let j = 0; j <= MAX_GOALS; j++) {
-      const p = pmfA[i] * pmfB[j];
-      if (i > j) pWin += p;
-      else if (i === j) pDraw += p;
-      else pLoss += p;
-      if (p > best.p) best = { p, a: i, b: j };
-    }
+  const n = MAX_GOALS + 1;
+  for (let k = 0; k < probs.length; k++) {
+    const i = Math.floor(k / n);
+    const j = k % n;
+    const p = probs[k];
+    if (i > j) pWin += p;
+    else if (i === j) pDraw += p;
+    else pLoss += p;
+    if (p > best.p) best = { p, a: i, b: j };
   }
 
   return {
@@ -113,16 +103,15 @@ function predictMatch(eloA, eloB, hostA = false, hostB = false) {
 // --- Single simulated match (Poisson draw) --------------------------------
 
 /** Simulate one match; returns { ga, gb }. */
-function simMatch(eloA, eloB, hostA, hostB) {
+function simMatch(eloA, eloB, hostA, hostB, rho = DEFAULT_RHO) {
   const [lambdaA, lambdaB] = expectedGoals(eloA, eloB, hostA, hostB);
-  return { ga: samplePoisson(lambdaA), gb: samplePoisson(lambdaB) };
+  return sampleDixonColes(lambdaA, lambdaB, rho, MAX_GOALS);
 }
 
 /** Decide a knockout tie. Returns winner index (0 = A, 1 = B). */
-function knockoutWinner(eloA, eloB, hostA, hostB) {
+function knockoutWinner(eloA, eloB, hostA, hostB, rho = DEFAULT_RHO) {
   const [lambdaA, lambdaB] = expectedGoals(eloA, eloB, hostA, hostB, true);
-  const ga = samplePoisson(lambdaA);
-  const gb = samplePoisson(lambdaB);
+  const { ga, gb } = sampleDixonColes(lambdaA, lambdaB, rho, MAX_GOALS);
   if (ga > gb) return 0;
   if (gb > ga) return 1;
   // Penalty shootout, lightly weighted by Elo (not a coin flip).
@@ -198,14 +187,14 @@ function compareStandings(a, b, ratings) {
 }
 
 /** Simulate a single group's round-robin; returns standings sorted best-first. */
-function simGroup(teams, ratings) {
+function simGroup(teams, ratings, rho = DEFAULT_RHO) {
   const table = {};
   for (const t of teams) table[t] = emptyStanding(t);
   for (let i = 0; i < teams.length; i++) {
     for (let j = i + 1; j < teams.length; j++) {
       const A = teams[i];
       const B = teams[j];
-      const { ga, gb } = simMatch(ratings[A], ratings[B], HOSTS.has(A), HOSTS.has(B));
+      const { ga, gb } = simMatch(ratings[A], ratings[B], HOSTS.has(A), HOSTS.has(B), rho);
       table[A].gf += ga; table[A].ga += gb;
       table[B].gf += gb; table[B].ga += ga;
       if (ga > gb) table[A].pts += 3;
@@ -269,13 +258,13 @@ const STAGE_RANK = { GROUP: 0, R32: 1, R16: 2, QF: 3, SF: 4, FINAL: 5, CHAMPION:
  * Simulate one full tournament. Returns { team: furthestStageName } for the
  * 32 knockout teams; teams not present exited in the group stage.
  */
-function simTournament(ratings) {
+function simTournament(ratings, rho = DEFAULT_RHO) {
   // Group stage.
   const winners = {};
   const runners = {};
   const thirds = []; // { team, standing, group }
   for (const letter of GROUP_LETTERS) {
-    const standings = simGroup(GROUPS[letter], ratings);
+    const standings = simGroup(GROUPS[letter], ratings, rho);
     winners[letter] = standings[0].team;
     runners[letter] = standings[1].team;
     thirds.push({ group: letter, ...standings[2] });
@@ -311,7 +300,7 @@ function simTournament(ratings) {
     const teamB = m.b.t === 'third' ? thirdByGroup[thirdAssignment[m.n]] : resolveSlot(m.b);
     markReach(teamA, 'R32');
     markReach(teamB, 'R32');
-    const w = knockoutWinner(ratings[teamA], ratings[teamB], matchHost(teamA), matchHost(teamB));
+    const w = knockoutWinner(ratings[teamA], ratings[teamB], matchHost(teamA), matchHost(teamB), rho);
     matchWinner[m.n] = w === 0 ? teamA : teamB;
   }
 
@@ -322,7 +311,7 @@ function simTournament(ratings) {
     const stage = ROUND_OF[m.n];
     markReach(teamA, stage);
     markReach(teamB, stage);
-    const w = knockoutWinner(ratings[teamA], ratings[teamB], matchHost(teamA), matchHost(teamB));
+    const w = knockoutWinner(ratings[teamA], ratings[teamB], matchHost(teamA), matchHost(teamB), rho);
     const winner = w === 0 ? teamA : teamB;
     matchWinner[m.n] = winner;
     if (m.n === 103) markReach(winner, 'CHAMPION');
@@ -335,7 +324,7 @@ function simTournament(ratings) {
  * Run the Monte Carlo simulation `iterations` times and tally how often each
  * team reaches each stage. Returns per-team probabilities (0..1).
  */
-function runMonteCarlo(eloModel, iterations = 10000, { onProgress } = {}) {
+function runMonteCarlo(eloModel, iterations = 10000, { rho = DEFAULT_RHO, onProgress } = {}) {
   const allTeams = Object.values(GROUPS).flat();
   // Snapshot ratings into a plain map for speed.
   const ratings = {};
@@ -347,7 +336,7 @@ function runMonteCarlo(eloModel, iterations = 10000, { onProgress } = {}) {
   }
 
   for (let i = 0; i < iterations; i++) {
-    const reached = simTournament(ratings);
+    const reached = simTournament(ratings, rho);
     for (const [team, stage] of Object.entries(reached)) {
       const r = STAGE_RANK[stage];
       const acc = tally[team];
@@ -380,7 +369,6 @@ module.exports = {
   expectedGoals,
   predictMatch,
   samplePoisson,
-  poissonPmf,
   simTournament,
   runMonteCarlo,
   HOSTS,
