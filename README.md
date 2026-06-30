@@ -2,14 +2,33 @@
 
 A dependency-free Node.js CLI that predicts the **2026 FIFA World Cup**. It
 computes Elo ratings from ~49,000 historical international matches, feeds them
-into a Poisson scoring model, and runs a Monte Carlo simulation of the full
-48-team tournament (10,000 runs by default) to estimate every team's odds of
+into a **Dixon-Coles** scoring model, and runs a Monte Carlo simulation of the
+full 48-team tournament (10,000 runs by default) to estimate every team's odds of
 winning the title, reaching the final, and reaching the semis. It then drops you
 into an interactive prompt where you can type two teams and get a head-to-head
 prediction.
 
+During the tournament, the `live` command re-downloads the latest results, locks
+in every match already played, and only simulates the fixtures still to come.
+
 > **Disclaimer:** Polycup is a probabilistic model for entertainment only — it
 > is **not betting advice**.
+
+## Features
+
+- **Zero dependencies** — runs with just Node.js; no `npm install`.
+- **Elo ratings** from ~49,000 historical internationals, weighted by importance,
+  goal margin, and home advantage.
+- **Dixon-Coles** bivariate Poisson model to fix the classic under-counting of
+  low-scoring draws.
+- **Official 2026 bracket** — 12 groups, 8 best third-place teams, and the FIFA
+  fixed-seeding knockout bracket.
+- **Live mode** — locks played matches and only simulates the rest once the
+  tournament starts.
+- **Backtest** — validate against the 2018 and 2022 World Cups with accuracy,
+  log-loss, Brier score, and Expected Calibration Error.
+- **Interactive CLI** — fuzzy team names, title-odds table, and head-to-head
+  predictions.
 
 ## Requirements
 
@@ -73,9 +92,9 @@ team's expected goals, and the single most likely scoreline:
 ```
   Brazil  vs  France
   ----------------------------------------
-  Brazil win : 21.7%
-  Draw       : 25.2%
-  France win : 53.1%
+  Brazil win : 22.6%
+  Draw       : 23.4%
+  France win : 54.0%
   Expected goals : Brazil 0.91 - 1.59 France
   Most likely score : Brazil 0-1 France
 ```
@@ -102,7 +121,7 @@ Per the official FIFA final draw (5 December 2025, Washington, D.C.):
 ## How it works
 
 The pipeline is **Elo → expected goals → Dixon-Coles/Poisson → Monte Carlo**, split across
-seven files:
+eight files:
 
 | File | Responsibility |
 |---|---|
