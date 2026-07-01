@@ -3,7 +3,7 @@
 /**
  * playerxg.js
  *
- * EXPERIMENTAL — Phase 12: Player-level xG model.
+ * EXPERIMENTAL — Phase 9: Player-level xG model.
  *
  * Builds a player-contribution model from the martj42/international_results
  * goalscorers dataset (the same free source used by elo.js). For each active

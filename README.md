@@ -233,6 +233,7 @@ After the simulation runs and prints the title-odds table, you get a prompt:
 
 ```
 > Brazil vs France          # head-to-head match prediction
+> penalty Brazil vs France  # penalty shootout prediction (alias: shootout)
 > player Brazil vs France   # [EXPERIMENTAL] player-level xG prediction alongside Elo
 > lineups Brazil vs France  # lineup-adjusted prediction (fetches live ESPN data)
 > watch                     # list today's live matches
@@ -311,6 +312,8 @@ seventeen files:
 | `worldcup2026.js` | The 48 qualified teams, their group assignments, the name mapping between this project's display names and the dataset's spellings (plus loose CLI aliases), and fuzzy typo matching. |
 | `playerxg.js` | **[EXPERIMENTAL]** Player-level xG model: downloads and caches `goalscorers.csv`, computes recency-weighted goals-per-90 rates for ~1,000 active internationals, and adjusts team xG lambdas based on their attacking quality relative to the field average. |
 | `verify-playerxg.js` | Verification script for the player xG model: runs 94 sanity checks covering data loading, deduplication, elite-player rates, multiplier bounds, prediction shape, and known-result validation. |
+| `penalty.js` | Penalty shootout model (Phase 10): downloads and caches `shootouts.csv`, blends historical shootout results, Elo pressure, taker quality, and host bonus to predict tied knockout matches. |
+| `verify-penalty.js` | Verification script for the penalty shootout model: runs 31 deterministic assertions covering output shape, probability bounds, ordering, degradation, and simulation integration. |
 | `polycup.js` | The CLI entry point: wires everything together, runs the simulation, renders the title-odds table, and launches the interactive prompt. |
 
 ### Elo model (`elo.js`)
@@ -352,10 +355,53 @@ seventeen files:
   underdog win rate of only ~17%, well below the historical World Cup knockout
   rate of ~25–35%. The cap keeps the model closer to real tournament behavior
   while still letting the Elo gap matter.
-- **Knockout ties** are decided by a penalty shootout lightly weighted by Elo
-  (not a coin flip, not deterministic).
+- **Knockout ties** are decided by a dedicated penalty shootout model (Phase 10).
+  It blends historical shootout results, Elo-derived pressure handling, a small
+  host-nation bonus, and the quality of each team's likely takers. If penalty
+  data is unavailable it degrades back to the Elo-damped estimate.
 - The full tournament runs **10,000 times by default**, tallying how often each
   team reaches each stage.
+
+### Penalty shootout model (`penalty.js`)
+
+Polycup no longer resolves tied knockout matches with a simple coin flip. The
+Phase 10 penalty model estimates each team's shootout strength from four
+sources:
+
+1. **Historical shootout results** — the martj42/international_results
+   `shootouts.csv` is downloaded and cached as `.cache_shootouts.csv`. Recent
+   shootouts are weighted more heavily, and a Laplace-smoothed win rate becomes
+   the history component.
+2. **Elo rating** — stronger teams are assumed to handle high-pressure knockout
+   moments better; the Elo gap is converted to a modest shootout edge (much
+   smaller than the equivalent open-play probability, because shootouts are
+   inherently random).
+3. **Likely takers** — the curated `players.js` database identifies top forwards
+   and midfielders who usually take penalties, and the cached `goalscorers.csv`
+   penalty-goal volume adds a proxy for taker depth.
+4. **Host-nation bonus** — a small edge for USA/Canada/Mexico shooting in
+   familiar conditions.
+
+Use it from the interactive prompt:
+
+```
+> penalty Brazil vs France
+> shootout Argentina vs Germany
+```
+
+The output prints a side-by-side comparison: win probability, Elo pressure,
+shootout history, taker quality, host bonus, and the most likely takers for
+each side.
+
+Verification:
+
+```bash
+node verify-penalty.js
+```
+
+The script runs 31 deterministic assertions covering model construction, output
+shape, probability bounds, favorite/underdog ordering, host and first-shooter
+edges, graceful degradation, and integration with `simulation.js`.
 
 ### Backtesting (`backtest.js`)
 
