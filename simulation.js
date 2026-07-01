@@ -64,6 +64,93 @@ function eloExpected(eloA, eloB) {
   return 1 / (1 + Math.pow(10, (eloB - eloA) / 400));
 }
 
+// --- Mid-match conditional prediction ----------------------------------------
+
+/**
+ * Predict the outcome of a match that is already in progress.
+ * Given the current score and minute, computes the probability of each team
+ * winning from this point forward using time-scaled expected goals.
+ *
+ * @param {number} eloA - Team A effective Elo (after adjustments for red cards etc.)
+ * @param {number} eloB - Team B effective Elo (after adjustments)
+ * @param {number[]} currentScore - [goalsA, goalsB] at this point
+ * @param {number} minute - Current match minute (0-90+)
+ * @param {object} [opts] - Additional options
+ * @param {boolean} [opts.hostA] - Team A is host nation
+ * @param {boolean} [opts.hostB] - Team B is host nation
+ * @param {boolean} [opts.knockout] - Is this a knockout match
+ * @param {number} [opts.rho] - Dixon-Coles rho parameter
+ * @returns {object} { pWin, pDraw, pLoss, xgRemA, xgRemB, predictedFinal, scoreDist }
+ */
+function predictMidMatch(eloA, eloB, currentScore, minute, opts = {}) {
+  const { hostA = false, hostB = false, knockout = false, rho = DEFAULT_RHO } = opts;
+
+  // Full-match expected goals (what the model would predict pre-kick-off)
+  const [fullLambdaA, fullLambdaB] = expectedGoals(eloA, eloB, hostA, hostB, knockout);
+
+  // Scale expected goals by remaining time
+  const minutesCapped = Math.max(0, Math.min(90, minute));
+  const timeRemaining = (90 - minutesCapped) / 90;
+
+  // Remaining expected goals for each team
+  const remainingLambdaA = fullLambdaA * timeRemaining;
+  const remainingLambdaB = fullLambdaB * timeRemaining;
+
+  // Edge case: match is over (or nearly)
+  if (timeRemaining <= 0.001) {
+    const [a, b] = currentScore;
+    return {
+      pWin: a > b ? 1 : 0,
+      pDraw: a === b ? 1 : 0,
+      pLoss: a < b ? 1 : 0,
+      xgRemA: 0,
+      xgRemB: 0,
+      predictedFinal: currentScore,
+      scoreDist: [{ score: currentScore, prob: 1 }],
+    };
+  }
+
+  // Build probability matrix for REMAINING goals using Dixon-Coles
+  const maxAdditional = 6; // max additional goals per team we consider
+  const probs = jointProbabilityMatrix(remainingLambdaA, remainingLambdaB, rho, maxAdditional);
+  const n = maxAdditional + 1;
+
+  let pWin = 0, pDraw = 0, pLoss = 0;
+  const scoreDist = [];
+
+  for (let k = 0; k < probs.length; k++) {
+    const addA = Math.floor(k / n);
+    const addB = k % n;
+    const finalA = currentScore[0] + addA;
+    const finalB = currentScore[1] + addB;
+    const p = probs[k];
+
+    if (finalA > finalB) pWin += p;
+    else if (finalA === finalB) pDraw += p;
+    else pLoss += p;
+
+    if (p > 0.005) { // only include meaningful probabilities
+      scoreDist.push({ score: [finalA, finalB], prob: p });
+    }
+  }
+
+  // Sort score distribution by probability (descending)
+  scoreDist.sort((a, b) => b.prob - a.prob);
+
+  // Most likely final score
+  const predictedFinal = scoreDist.length > 0 ? scoreDist[0].score : currentScore;
+
+  return {
+    pWin,
+    pDraw,
+    pLoss,
+    xgRemA: remainingLambdaA,
+    xgRemB: remainingLambdaB,
+    predictedFinal,
+    scoreDist: scoreDist.slice(0, 10), // top 10 most likely final scores
+  };
+}
+
 // --- Single-match analytic prediction -------------------------------------
 
 /**
@@ -514,6 +601,7 @@ function normalizeCounts(counts, iterations) {
 module.exports = {
   expectedGoals,
   predictMatch,
+  predictMidMatch,
   samplePoisson,
   simTournament,
   simTournamentDetailed,

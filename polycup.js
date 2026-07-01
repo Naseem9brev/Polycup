@@ -24,6 +24,7 @@ const { generateBracketHTML } = require('./bracket');
 const { generateReportHTML } = require('./report');
 const { toJSON, oddsToCSV, headToHeadToCSV } = require('./export');
 const { formatProfile } = require('./profile');
+const { startWatch, listWatchableMatches } = require('./watch');
 const { GROUPS, TEAMS, GROUP_OF, resolveTeam } = require('./worldcup2026');
 
 const DISCLAIMER =
@@ -109,6 +110,8 @@ function printPrediction(elo, teamA, teamB, rho) {
 const HELP = `
 Commands:
   <team1> vs <team2>   head-to-head match prediction (e.g. "Brazil vs France")
+  watch                list today's matches and attach to a live match
+  watch <A> vs <B>     live-track a match with auto-updating predictions
   titles               reprint the full title-odds table
   teams                list all 48 qualified teams and their groups
   backtest [year|all]  validate against 2018 or 2022 World Cup (e.g. "backtest 2022")
@@ -235,6 +238,51 @@ function startPrompt(elo, odds, rho, bracket) {
         printTitleTable(liveOdds);
       } catch (e) {
         console.log(`  Live error: ${e.message}`);
+      }
+    }
+    else if (lower.startsWith('watch')) {
+      const rest = line.slice('watch'.length).trim();
+      if (!rest) {
+        // List today's matches
+        try {
+          const { text } = await listWatchableMatches();
+          console.log(text);
+        } catch (e) {
+          console.log(`  Watch error: ${e.message}`);
+        }
+      } else {
+        // Parse "team1 vs team2"
+        const parts = rest.split(/\s+(?:vs?|v\.?|-)\s+/i);
+        if (parts.length === 2) {
+          const wTeamA = resolveTeam(parts[0]);
+          const wTeamB = resolveTeam(parts[1]);
+          if (!wTeamA || !wTeamB) {
+            const unknown = !wTeamA ? parts[0].trim() : parts[1].trim();
+            console.log(`  Unknown team: "${unknown}". Type "teams" to list valid teams.`);
+          } else {
+            try {
+              const watcher = await startWatch(wTeamA, wTeamB, elo, rho, {
+                onExit: () => {
+                  try { rl.prompt(); } catch (e) { /* ignore */ }
+                },
+              });
+              // Listen for 'q' to stop watching
+              const quitHandler = (raw) => {
+                if (raw.trim().toLowerCase() === 'q' && watcher.isRunning()) {
+                  watcher.stop();
+                  console.log('\n  Exited watch mode.\n');
+                  rl.removeListener('line', quitHandler);
+                  rl.prompt();
+                }
+              };
+              rl.on('line', quitHandler);
+            } catch (e) {
+              console.log(`  Watch error: ${e.message}`);
+            }
+          }
+        } else {
+          console.log('  Usage: watch <team1> vs <team2>  or  watch  (to list matches)');
+        }
       }
     }
     else if (lower.startsWith('profile')) handleProfile(elo, odds, rho, line.slice('profile'.length).trim());
