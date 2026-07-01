@@ -77,21 +77,128 @@ Team names are fuzzy-matched — `BRA`, `bra`, `Brazl` all resolve correctly.
 
 Defaults can be stored in `~/.polycup/config.json` or `.polycuprc.json`.
 
-## How it works
+## Features & models
 
-**Elo → xG → Dixon-Coles/Poisson → Monte Carlo**
+### Core simulation pipeline
 
-- **Elo** (`elo.js`): Replay ~49,000 matches oldest-to-newest. K-factor weighted by match importance, goal margin, and home advantage.
-- **Dixon-Coles** (`dixoncoles.js`): Bivariate Poisson correction for low-scoring draws. ρ estimated via MLE from the cached dataset.
-- **Simulation** (`simulation.js`): 12 groups round-robin, top 2 + 8 best third-placers advance; official FIFA 2026 bracket seeding.
-- **Penalty shootout** (`penalty.js`): Blends historical shootout results, Elo pressure, taker quality, and host bonus. Use `penalty <A> vs <B>`.
-- **Live/Watch** (`live.js`, `watch.js`): `live` locks played matches and re-simulates. `watch` polls ESPN every 30s for in-match score/events, adjusts xG by remaining time, and displays auto-updating win probabilities.
-- **Lineup-aware Elo** (`players.js`, `lineupelo.js`): Player importance database (0–100 scale) for all 48 teams. Absent key players reduce team Elo (`score × 0.30`, capped at ±80). Use `lineups <A> vs <B>`.
-- **Match xG** (`matchxg.js`) [EXPERIMENTAL]: Per-team attack/defense rates from recency- and importance-weighted historical goals. Blends 60% Elo + 40% rate model.
-- **Player xG** (`playerxg.js`) [EXPERIMENTAL]: Per-player recency-weighted goals/90, adjusted for squad depth. Blends 65% Elo + 35% player data.
-- **Club form** (`clubform.js`) [EXPERIMENTAL]: National team strength estimated from club minutes, league strength (UEFA coefficients, Premier League = 1.0), and club stats. No transfer values. Elo adjustment ±40 max.
-- **Backtest** (`backtest.js`): Validates against 2018/2022 WC — accuracy, log-loss, Brier score, ECE. 2022: 54.7% accuracy, Argentina given ~23% title odds.
-- **Exports** (`bracket.js`, `report.js`, `export.js`, `profile.js`): Self-contained HTML bracket, full HTML report, JSON/CSV odds, per-team profile cards.
+**Elo ratings** (`elo.js`) — the foundation of every prediction. Every international match since the 19th century is replayed in order, and each result updates both teams' ratings using a K-factor weighted by match importance (World Cup > continental tournaments > qualifiers > friendlies), goal margin, and home advantage. This gives a single number capturing long-run team strength that automatically accounts for squad changes over time.
+
+**Dixon-Coles model** (`dixoncoles.js`, `simulation.js`) — Elo gaps are converted to expected goals, then match outcomes are drawn from a bivariate Poisson distribution with a Dixon-Coles correction. Standard independent-Poisson models under-count 0-0 and 1-1 draws and over-count 0-1/1-0 results. The correction factor ρ is estimated via maximum likelihood from the cached results dataset rather than taken from literature, so it reflects actual international football scoring patterns.
+
+**Monte Carlo tournament** (`simulation.js`) — the full 48-team bracket runs 10,000 times. Each run draws match scores from the Dixon-Coles model, resolves group standings (points → goal difference → Elo tiebreak), picks the 8 best third-placed teams per the FIFA criteria, and seeds the knockout bracket using the official FIFA 2026 fixed-seeding template. The result is a probability distribution over every possible finishing position for every team.
+
+---
+
+### Penalty shootout model (`penalty.js`)
+
+Pure Elo gives each team a 50/50 chance in a shootout — clearly wrong. This model blends four signals:
+
+| Signal | Why it helps |
+|---|---|
+| **Historical shootout results** (`shootouts.csv`) | Some nations (Germany, Argentina) genuinely win shootouts more than others; recent history is weighted more than old |
+| **Elo rating** | Stronger teams handle pressure better; a large Elo gap produces a small but real shootout edge |
+| **Taker quality** (`players.js` + `goalscorers.csv`) | Teams with more clinical forwards and higher historical penalty-goal volume have better taker depth |
+| **Host bonus** | USA, Canada, Mexico get a small edge shooting in familiar conditions |
+
+Use `penalty <A> vs <B>` or `shootout <A> vs <B>`.
+
+---
+
+### Live & watch modes (`live.js`, `watch.js`)
+
+**`live`** — re-downloads the latest results, locks every already-played match, and re-simulates only the remaining fixtures. Updated title odds that reflect who has actually qualified.
+
+**`watch <A> vs <B>`** — attaches to a live match via ESPN's public API (no key needed). Every 30 seconds it fetches the current score and events, then re-runs the prediction conditioned on the current state:
+- xG is scaled by remaining time
+- Red cards subtract from the affected team's effective Elo (scaled by time left)
+- Recent goals add a momentum bonus
+
+This turns the model into a live win-probability tracker rather than a static pre-match forecast.
+
+---
+
+### Lineup-aware Elo (`players.js`, `lineupelo.js`)
+
+The base Elo reflects long-run team strength, not who is actually starting on the day. This layer adjusts for absences.
+
+**Dataset:** a hand-curated player importance database covering all 48 qualified teams. Each player has a score 0–100 (Messi = 100, reliable starter ≈ 75, fringe player ≈ 55).
+
+**Why it helps:** if a team's Elo is built assuming their best XI, a suspended Mbappé or injured Salah is a real hit to their odds that the base rating won't capture. When lineup data is available from ESPN, any key player (score ≥ 70) missing from the confirmed XI reduces the team's effective Elo by `score × 0.30` (capped at ±80 total).
+
+Use `lineups <A> vs <B>` for a side-by-side base vs. adjusted prediction.
+
+---
+
+### Match-level xG model — experimental (`matchxg.js`)
+
+**Dataset:** `results.csv` (reuses the Elo cache) — goals scored and conceded per team per match, 2020–present.
+
+**Model:** each team gets an attack multiplier and a defense multiplier derived from their recency- and importance-weighted goal rates, normalized against the field average. Expected goals for a match are then `(avg_xG) × attackA × defenseB` for each side. The final prediction blends **60% Elo + 40% rate model**.
+
+**Why it helps:** Elo treats all wins equally regardless of scoreline. A team that's been crushing opponents 4-0 looks the same as one scraping 1-0 wins. The rate model captures that underlying offensive and defensive quality and corrects for it.
+
+Use `xg <A> vs <B>` for a three-column comparison (Elo baseline · xG rate model · blended).
+
+---
+
+### Player-level xG model — experimental (`playerxg.js`)
+
+**Dataset:** `goalscorers.csv` — individual goal records for ~1,000 active internationals, recency-weighted with a 3-year half-life.
+
+**Model:** each player's goals-per-90 rate is computed (with penalty goals down-weighted to 40%), and the top 11 players per team are summed into a team attack multiplier. A defensive proxy (`1 / sqrt(attackMul)`) approximates team-level defensive quality. The final prediction blends **65% Elo + 35% player-adjusted**.
+
+**Why it helps:** two teams can have the same Elo but very different attacking rosters — one packed with elite scorers, one with workmanlike contributors. Individual goal rates surface that difference and shift the expected-goals split accordingly.
+
+Use `player <A> vs <B>`.
+
+---
+
+### Club form model — experimental (`clubform.js`)
+
+**Dataset:** manually compiled club data — minutes played, league of each club, and club performance stats (goals, assists, tackles, clean sheets) for national team players.
+
+**Model:** each player is scored by their club output weighted by league strength (UEFA 2024 coefficients, Premier League = 1.0 down to lower leagues ≈ 0.3). A team's club-strength score is the average across its players. The difference between two teams is converted to an Elo adjustment, capped at ±40 points.
+
+**Why it helps:** Elo is built from international results, which are infrequent and can lag a team's current form by months. Club data is continuous — if a nation's squad is in poor form across their club sides right now, that's a signal the international Elo hasn't yet priced in. This model captures recent real-world form without relying on transfer market values.
+
+Use `clubform <A> vs <B>` for a base vs. club-form-adjusted comparison.
+
+---
+
+### Backtest (`backtest.js`)
+
+Validates the model against the 2018 and 2022 World Cups by rebuilding Elo ratings and ρ from data available *before* each tournament, then comparing predictions to actual results.
+
+- **2022:** 54.7% match accuracy (62.5% knockouts), Brier 0.624, ECE 0.142 — Argentina given ~23% title odds
+- **2018:** 54.7% match accuracy (43.8% knockouts), Brier 0.582, ECE 0.040 — France given ~7% title odds
+
+Run `backtest 2022`, `backtest 2018`, or `backtest all` from the prompt.
+
+---
+
+### Exports (`bracket.js`, `report.js`, `export.js`, `profile.js`)
+
+All outputs are self-contained and dependency-free:
+
+| Command / flag | Output |
+|---|---|
+| `bracket` / `--bracket=file` | SVG knockout bracket, winner probabilities per slot |
+| `report` / `--report=file` | Full HTML report: title odds, expected group standings, team paths |
+| `export json` / `--json` | Title odds + full head-to-head matrix as JSON |
+| `export csv` / `--csv=file` | Same as CSV |
+| `profile <team>` | Terminal team card: Elo, group, path odds, recent form, schedule |
+
+## Data sources
+
+| Dataset | Used for | Why |
+|---|---|---|
+| `results.csv` ([martj42](https://github.com/martj42/international_results)) | Elo ratings, match xG model | ~49,000 international results; the most complete free dataset available |
+| `goalscorers.csv` ([martj42](https://github.com/martj42/international_results)) | Player xG model | Individual goal records with dates — enables per-player scoring rate estimation |
+| `shootouts.csv` ([martj42](https://github.com/martj42/international_results)) | Penalty model | Historical penalty shootout outcomes; the only public dataset with team-level shootout win rates |
+| ESPN public API | Live watch mode, lineup data | Real-time scores, match events, and confirmed starting XIs — no API key required |
+| Club data (compiled) | Club form model | Minutes played + league of each national team player; captures current club-level form |
+
+All martj42 files are cached locally on first use (`.cache_results.csv`, `.cache_scorers.csv`, `.cache_shootouts.csv`). Delete a cache file to force a fresh download.
 
 ## Groups (FIFA final draw, Dec 2025)
 
@@ -109,18 +216,6 @@ Defaults can be stored in `~/.polycup/config.json` or `.polycuprc.json`.
 | J | Argentina, Algeria, Austria, Jordan |
 | K | Portugal, DR Congo, Uzbekistan, Colombia |
 | L | England, Croatia, Ghana, Panama |
-
-## Data & caching
-
-All data comes from [martj42/international_results](https://github.com/martj42/international_results) (free, no API key). Files are cached locally on first run:
-
-| Cache file | Source |
-|---|---|
-| `.cache_results.csv` | Match results (~49k rows) |
-| `.cache_scorers.csv` | Goalscorers (player xG) |
-| `.cache_shootouts.csv` | Penalty shootout history |
-
-Delete any cache file to force a fresh download.
 
 ## Verification
 
