@@ -33,6 +33,7 @@ Requires Node.js >= 18. Zero third-party dependencies.
 ```bash
 polycup                  # run simulation + interactive prompt
 polycup --sims=50000     # more iterations
+polycup --context        # apply venue/travel/rest/altitude adjustments in simulation
 polycup --xg             # pre-build xG model on startup
 polycup --bracket=out.html --report=out.html --json --csv=out.csv
 ```
@@ -41,6 +42,8 @@ polycup --bracket=out.html --report=out.html --json --csv=out.csv
 
 ```
 > Brazil vs France          # head-to-head prediction
+> context Brazil vs France  # venue/travel/rest/altitude adjustments and revised prediction
+> venue Brazil vs France at Mexico City  # explicit venue context
 > xg Brazil vs France       # [EXPERIMENTAL] match-level xG vs Elo baseline
 > player Brazil vs France   # [EXPERIMENTAL] player-level xG prediction
 > clubform Brazil vs France # [EXPERIMENTAL] club-form-adjusted prediction
@@ -66,6 +69,7 @@ Team names are fuzzy-matched — `BRA`, `bra`, `Brazl` all resolve correctly.
 | `--sims=N` | 10000 | Monte Carlo iterations |
 | `--seed=VALUE` | — | Reproducible run (checkpoints every 1k, use `--resume` to continue) |
 | `--rho=VALUE` | estimated | Override Dixon-Coles ρ |
+| `--context` | off | Apply venue/travel/rest/altitude adjustments in tournament simulation |
 | `--xg` | off | Pre-build match xG model on startup |
 | `--format=json` | — | Print title odds as JSON and exit |
 | `--favorites=A,B` | — | Highlight teams in odds table |
@@ -114,6 +118,32 @@ Use `penalty <A> vs <B>` or `shootout <A> vs <B>`.
 - Recent goals add a momentum bonus
 
 This turns the model into a live win-probability tracker rather than a static pre-match forecast.
+
+---
+
+### Match context adjustments (`context.js`)
+
+The base Elo treats every match as equally convenient for both teams. In a tournament played across a continent, that is rarely true. This layer adjusts a team's effective Elo before each match based on physical and tournament context.
+
+**Factors modeled:**
+
+| Factor | How it works | Example |
+|---|---|---|
+| **Rest days** | Fewer than 3 days since the last match carries a fatigue penalty; 6+ days is neutral | 4-day turnaround ≈ -8 Elo |
+| **Travel distance** | Haversine distance from the team's home base to the venue; long flights cost Elo | South Africa to Mexico City ≈ -20 Elo |
+| **Time zones** | Each hour away from the team's home timezone costs a little, capped at -12 Elo | Europe to Pacific venues ≈ -9 to -12 Elo |
+| **Altitude** | Teams acclimated to high altitude (≥ 1500 m) get a bonus; sea-level teams are penalized at high-altitude venues | Mexico City gives Ecuador +5, Netherlands -25 |
+| **Host venue** | Playing in your own host country adds a venue-level bonus on top of the existing host-nation Elo bonus | Mexico in Mexico City ≈ +18 Elo |
+| **Climate / heat** | Hot/humid venues mildly hurt teams from cool climates; heat-acclimated teams get a small bonus | Northern Europe in Miami ≈ -8 Elo |
+
+**Data:** hardcoded tables for the 16 2026 World Cup venues (city, country, altitude, timezone, coordinates) and representative home bases for all 48 qualified teams. Fixture dates and venues are read from the cached `results.csv`.
+
+**Usage:**
+- `polycup --context` — apply adjustments during the Monte Carlo tournament simulation.
+- `context <A> vs <B>` — look up the 2026 fixture and show a side-by-side base vs. context prediction.
+- `venue <A> vs <B> at <venue>` — run the same analysis for an explicit venue (e.g., `venue Brazil vs France at Mexico City`).
+
+Adjustments are intentionally small (capped at ±80 Elo per side) so they nudge the model without overwhelming the underlying Elo rating.
 
 ---
 

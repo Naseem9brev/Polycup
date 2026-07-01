@@ -17,7 +17,8 @@
     "build:binary": "node scripts/build-binary.js",
     "verify:playerxg": "node verify-playerxg.js",
     "verify:penalty": "node verify-penalty.js",
-    "verify:matchxg": "node verify-matchxg.js"
+    "verify:matchxg": "node verify-matchxg.js",
+    "verify:context": "node verify-context.js"
   },
   "keywords": [
     "world-cup",
