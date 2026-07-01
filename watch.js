@@ -21,6 +21,11 @@ const { fetchScoreboard, fetchMatchSummary, fetchLiveMatches } = require('./data
 const { enrichMatchState } = require('./matchstate');
 const { predictMidMatch, expectedGoals, HOSTS } = require('./simulation');
 const { resolveTeam } = require('./worldcup2026');
+const {
+  computeMatchLineupDeltas,
+  extractStarterNames,
+  formatWatchLineupNote,
+} = require('./lineupelo');
 
 const POLL_INTERVAL = 30000; // 30 seconds between polls
 const DISPLAY_WIDTH = 60;
@@ -141,9 +146,16 @@ async function pollAndRender(teamA, teamB, elo, rho) {
   // Build enriched match state
   const state = enrichMatchState(match, summary);
 
-  // Run prediction
-  const eloA = elo.getRating(teamA) + state.eloAdjustments.home;
-  const eloB = elo.getRating(teamB) + state.eloAdjustments.away;
+  // Compute lineup-aware Elo deltas (gracefully returns { delta: 0 } when no data)
+  let lineupDeltas = { home: { delta: 0, hasData: false }, away: { delta: 0, hasData: false } };
+  if (state.lineups) {
+    const { startersA, startersB } = extractStarterNames(state.lineups, teamA, teamB);
+    lineupDeltas = computeMatchLineupDeltas(teamA, startersA, teamB, startersB);
+  }
+
+  // Run prediction (combine match-state + lineup Elo adjustments)
+  const eloA = elo.getRating(teamA) + state.eloAdjustments.home + lineupDeltas.home.delta;
+  const eloB = elo.getRating(teamB) + state.eloAdjustments.away + lineupDeltas.away.delta;
   const hostA = HOSTS.has(teamA);
   const hostB = HOSTS.has(teamB);
 
@@ -152,7 +164,7 @@ async function pollAndRender(teamA, teamB, elo, rho) {
   });
 
   // Render the display
-  renderWatchDisplay(state, prediction, teamA, teamB, elo, summary);
+  renderWatchDisplay(state, prediction, teamA, teamB, elo, summary, lineupDeltas);
 
   return { status: match.status };
 }
@@ -172,7 +184,7 @@ function findMatch(matches, teamA, teamB) {
 
 // --- Terminal rendering ------------------------------------------------------
 
-function renderWatchDisplay(state, prediction, teamA, teamB, elo, summary) {
+function renderWatchDisplay(state, prediction, teamA, teamB, elo, summary, lineupDeltas) {
   // Clear previous output and redraw
   const lines = [];
 
@@ -222,6 +234,26 @@ function renderWatchDisplay(state, prediction, teamA, teamB, elo, summary) {
   if (state.status === 'in') {
     lines.push('');
     lines.push(`  Remaining xG: ${teamA} ${prediction.xgRemA.toFixed(2)} - ${prediction.xgRemB.toFixed(2)} ${teamB}`);
+  }
+
+  // Lineup-aware Elo adjustments (Phase 8)
+  if (lineupDeltas) {
+    const lineupNote = formatWatchLineupNote(
+      teamA, teamB, lineupDeltas.home, lineupDeltas.away
+    );
+    if (lineupNote) {
+      lines.push('');
+      lines.push(lineupNote);
+      // Show absent key players if any
+      const absentHome = lineupDeltas.home.absent || [];
+      const absentAway = lineupDeltas.away.absent || [];
+      if (absentHome.length > 0) {
+        lines.push(`  Missing (${teamA}): ${absentHome.map(p => p.name).join(', ')}`);
+      }
+      if (absentAway.length > 0) {
+        lines.push(`  Missing (${teamB}): ${absentAway.map(p => p.name).join(', ')}`);
+      }
+    }
   }
 
   // Red cards / adjustments

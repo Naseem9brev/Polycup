@@ -40,6 +40,10 @@ in every match already played, and only simulates the fixtures still to come.
 - **Watch mode** — attach to a live match and get auto-updating win/draw/loss
   probabilities, predicted final score, and event-driven model adjustments
   (red cards, momentum) via ESPN's public API. No API key needed.
+- **Lineup-aware Elo** — player importance database covering all 48 qualified
+  teams; automatically adjusts a team's effective Elo when star players are
+  confirmed absent from the starting XI. Use `lineups <A> vs <B>` to see a
+  side-by-side base vs. adjusted prediction for any match-day lineup.
 - **Backtest** — validate against the 2018 and 2022 World Cups with accuracy,
   log-loss, Brier score, and Expected Calibration Error.
 - **Interactive CLI** — fuzzy team names, title-odds table, and head-to-head
@@ -228,20 +232,22 @@ no score and are ignored.
 After the simulation runs and prints the title-odds table, you get a prompt:
 
 ```
-> Brazil vs France     # head-to-head match prediction
-> watch                # list today's live matches
-> watch USA vs Mexico  # attach to a live match with auto-updating predictions
-> titles               # reprint the full title-odds table
-> teams                # list all 48 qualified teams + groups
-> profile Brazil       # team card: Elo, path odds, recent form, group schedule
-> bracket              # write the predicted knockout bracket to an HTML file
-> report               # write a full HTML report (odds, groups, paths)
-> export json          # export title odds + head-to-head as JSON
-> export csv           # export title odds + head-to-head as CSV
-> backtest 2022        # validate against the 2022 World Cup
-> live                 # re-download latest results and lock played matches
-> help                 # show available commands
-> quit                 # exit
+> Brazil vs France          # head-to-head match prediction
+> player Brazil vs France   # [EXPERIMENTAL] player-level xG prediction alongside Elo
+> lineups Brazil vs France  # lineup-adjusted prediction (fetches live ESPN data)
+> watch                     # list today's live matches
+> watch USA vs Mexico        # attach to a live match with auto-updating predictions
+> titles                    # reprint the full title-odds table
+> teams                     # list all 48 qualified teams + groups
+> profile Brazil            # team card: Elo, path odds, recent form, group schedule
+> bracket                   # write the predicted knockout bracket to an HTML file
+> report                    # write a full HTML report (odds, groups, paths)
+> export json               # export title odds + head-to-head as JSON
+> export csv                # export title odds + head-to-head as CSV
+> backtest 2022             # validate against the 2022 World Cup
+> live                      # re-download latest results and lock played matches
+> help                      # show available commands
+> quit                      # exit
 ```
 
 Team names are matched loosely: `Brazil`, `BRA`, and `bra` all resolve to the
@@ -280,7 +286,7 @@ Per the official FIFA final draw (5 December 2025, Washington, D.C.):
 ## How it works
 
 The pipeline is **Elo → expected goals → Dixon-Coles/Poisson → Monte Carlo**, split across
-fourteen files:
+seventeen files:
 
 | File | Responsibility |
 |---|---|
@@ -294,12 +300,17 @@ fourteen files:
 | `report.js` | Generates a single self-contained HTML report: title odds, expected group standings, and team path probabilities. |
 | `export.js` | JSON and CSV exporters for the title odds and the full head-to-head prediction matrix. |
 | `profile.js` | Renders a per-team text profile card (Elo, group, path odds, recent form, group-stage schedule). |
-| `watch.js` | Live match watcher: polls ESPN every 30s for scores/events, feeds match state into the prediction engine, and renders an auto-refreshing terminal display. |
+| `watch.js` | Live match watcher: polls ESPN every 30s for scores/events, feeds match state into the prediction engine, and renders an auto-refreshing terminal display. Lineup-aware Elo adjustments are shown when ESPN roster data is available. |
 | `datasource.js` | ESPN public API fetcher (no auth required): live scores, lineups, formations, match events for the World Cup. |
 | `matchstate.js` | Converts raw ESPN data into model-friendly state: classifies events, counts red cards, computes momentum, and derives Elo adjustments. |
+| `players.js` | Player importance database (Phase 8): maps key players for all 48 World Cup teams to an importance score (0–100) used to compute lineup-aware Elo adjustments. |
+| `lineupelo.js` | Lineup-aware Elo engine (Phase 8): computes per-team Elo deltas from confirmed starters vs. expected key players, with graceful degradation and display formatters for the CLI and watch mode. |
+| `verify-lineupelo.js` | Verification script for the lineup Elo model: runs 58 assertions covering player lookup, absence detection, delta arithmetic, the cap, graceful degradation, and integration with `predictMatch`. |
 | `config.js` | Loads defaults from `~/.polycup/config.json` and `.polycuprc.json`, validated and merged under CLI flags. |
 | `rng.js` | Seedable pseudo-random number generator (sfc32) with a swappable global hook, enabling reproducible and resumable Monte Carlo runs. |
 | `worldcup2026.js` | The 48 qualified teams, their group assignments, the name mapping between this project's display names and the dataset's spellings (plus loose CLI aliases), and fuzzy typo matching. |
+| `playerxg.js` | **[EXPERIMENTAL]** Player-level xG model: downloads and caches `goalscorers.csv`, computes recency-weighted goals-per-90 rates for ~1,000 active internationals, and adjusts team xG lambdas based on their attacking quality relative to the field average. |
+| `verify-playerxg.js` | Verification script for the player xG model: runs 94 sanity checks covering data loading, deduplication, elite-player rates, multiplier bounds, prediction shape, and known-result validation. |
 | `polycup.js` | The CLI entry point: wires everything together, runs the simulation, renders the title-odds table, and launches the interactive prompt. |
 
 ### Elo model (`elo.js`)
@@ -428,6 +439,96 @@ The model works by:
 
 Data comes from ESPN's public API (no API key, no signup). Press `q` + Enter to
 exit watch mode and return to the interactive prompt.
+
+Watch mode automatically incorporates lineup-aware Elo adjustments (see below)
+when ESPN roster data is available for the match.
+
+### Lineup-aware Elo adjustments (`players.js`, `lineupelo.js`)
+
+The base Elo model captures long-run team strength, but on any given match day
+the actual XI can diverge: a star striker suspended, an elite keeper injured, or
+a key midfielder rested for rotation. Phase 8 translates those deviations into an
+additive Elo adjustment fed directly into the prediction engine.
+
+#### How it works
+
+1. **Player importance database** (`players.js`) — a hand-curated roster for all
+   48 qualified teams. Each entry maps a player's name to an importance score
+   (0–100), where 100 is a once-in-a-generation talisman (Messi, Mbappé) and
+   50–70 is a solid regular starter. Scores follow a coarse 5-point grid so minor
+   name-matching noise does not produce wildly different results.
+
+2. **Absence detection** — for each of a team's top-N (default: 5) most important
+   players, the engine checks whether they appear in the confirmed starting XI. If
+   a key player is missing, an Elo penalty proportional to their importance score
+   is applied: `penalty = score × 0.30`. A missing Messi (score 100) → −30 Elo;
+   a missing backup-quality player (score 55, below the 70-point threshold) → no
+   penalty.
+
+3. **Lineup confidence** — when no lineup data is available the delta is 0 and the
+   base Elo is used unchanged. The feature gracefully degrades in all cases.
+
+4. **Cap** — the total lineup adjustment is capped at ±80 Elo to prevent any
+   single-player effect from dominating the prediction.
+
+#### `lineups` command
+
+```
+> lineups France vs England
+```
+
+1. Fetches today's ESPN scoreboard and match summary (if available).
+2. Extracts the confirmed starting XIs.
+3. Computes the lineup Elo delta for each team.
+4. Prints a side-by-side comparison of the **base prediction** (Elo only) vs.
+   the **lineup-adjusted prediction**.
+
+Example output:
+
+```
+  ============================================================
+  LINEUP-AWARE PREDICTION: France  vs  England
+  ============================================================
+
+  France
+    Base Elo      : 1842
+    Lineup delta  : -30 Elo
+    Adjusted Elo  : 1812
+    Key players absent (1):
+      ✗ Kylian Mbappé [FWD, score 99] — not in starting XI
+
+  England
+    Base Elo      : 1798
+    Lineup delta  : 0 Elo
+    Adjusted Elo  : 1798
+
+  ─────────────────────────────────────────────────────────
+  PREDICTION COMPARISON
+  ─────────────────────────────────────────────────────────
+                          Base   Adjusted
+  France win             54.3%      49.2%
+  Draw                   22.8%      23.4%
+  England win            22.9%      27.4%
+
+  Expected goals  (adj): France 1.19 — 1.31 England
+  Most likely score     : France 1-1 England
+```
+
+The command degrades gracefully: if the match is not yet on the ESPN scoreboard,
+it falls back to the base prediction with a note explaining why lineup data is
+unavailable.
+
+#### Verification
+
+Run the self-contained smoke-test script (no network required, no Elo model download):
+
+```bash
+node verify-lineupelo.js
+```
+
+This runs 58 deterministic assertions covering player lookup, absence/presence
+detection, Elo delta arithmetic, the cap, graceful degradation, format helpers,
+and end-to-end integration with `predictMatch`.
 
 ## Data source
 
