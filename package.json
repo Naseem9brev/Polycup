@@ -7,18 +7,8 @@
     "polycup": "polycup.js"
   },
   "files": [
-    "polycup.js",
-    "elo.js",
-    "dixoncoles.js",
-    "simulation.js",
-    "backtest.js",
-    "calibration.js",
-    "live.js",
-    "worldcup2026.js",
-    "playerxg.js",
-    "verify-playerxg.js",
-    "penalty.js",
-    "verify-penalty.js",
+    "*.js",
+    "scripts/",
     "LICENSE",
     "README.md"
   ],
@@ -49,10 +39,10 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/avikabra/Polycup.git"
+    "url": "git+https://github.com/Naseem9brev/Polycup.git"
   },
   "bugs": {
-    "url": "https://github.com/avikabra/Polycup/issues"
+    "url": "https://github.com/Naseem9brev/Polycup/issues"
   },
-  "homepage": "https://github.com/avikabra/Polycup#readme"
+  "homepage": "https://github.com/Naseem9brev/Polycup#readme"
 }
