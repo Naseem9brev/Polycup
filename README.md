@@ -530,6 +530,111 @@ This runs 58 deterministic assertions covering player lookup, absence/presence
 detection, Elo delta arithmetic, the cap, graceful degradation, format helpers,
 and end-to-end integration with `predictMatch`.
 
+### Player-level xG model — experimental (`playerxg.js`)
+
+> **This is an experimental feature.** Results should be treated as exploratory.
+> Only goals scored are used as a proxy for player quality; defensive and creative
+> contributions beyond scoring are not captured.
+
+The `player` command adds a second data dimension to any head-to-head prediction:
+how does each team's *individual player roster* shift the expected-goals picture
+compared to the pure Elo baseline?
+
+```
+> player Brazil vs France
+```
+
+Sample output:
+
+```
+  [EXPERIMENTAL] Player-level xG — Brazil  vs  France
+  ============================================================
+  Blend: 35% player data · 65% Elo
+  ------------------------------------------------------------
+                              Elo baseline   Player-adjusted
+  ------------------------------------------------------------
+  Expected goals:
+    Brazil:                          0.95              1.08
+    France:                          1.55              1.80
+  ------------------------------------------------------------
+  Brazil win:                       24.1%             23.6%
+  Draw:                             23.7%             21.5%
+  France win:                       52.2%             54.9%
+  ------------------------------------------------------------
+  Elo most likely score    : Brazil 0-1 France
+  Player most likely score : Brazil 0-1 France
+  ------------------------------------------------------------
+  Brazil key players : Vinícius Júnior, Matheus Cunha, Raphinha, Richarlison, Rodrygo
+  France key players : Kylian Mbappé, Ousmane Dembélé, Bradley Barcola, …
+  Attack multipliers — Brazil: ×1.081, France: ×1.400
+  ============================================================
+  Note: only historical goals scored are used as a proxy for player quality.
+  Defensive ratings are approximated. Results are for exploration only.
+```
+
+#### How the player model works
+
+1. **Data source:** `goalscorers.csv` from the
+   [martj42/international_results](https://github.com/martj42/international_results)
+   GitHub repository — the same free, no-key source used by the Elo model.
+   Downloaded and cached as `.cache_scorers.csv` on first `player` command.
+
+2. **Recency weighting:** Goals scored further in the past count less. The weight
+   decays exponentially with a half-life of ~3 years, so a goal today counts
+   roughly twice as much as one scored 3 years ago.
+
+3. **Appearances:** Because per-minute lineup data is unavailable, each player's
+   appearance count is estimated as `max(scoringMatches, 35% of team's total matches)`.
+   This prevents one-game heroes from inflating their goals-per-90 rate.
+
+4. **Penalty down-weighting:** Penalty goals count at 40% to avoid over-weighting
+   specialist penalty takers who are less dangerous in open play.
+
+5. **Name deduplication:** Unicode diacritics are stripped and names are lower-
+   cased before grouping, so "Julián Álvarez" and "Julián Alvarez" (dataset
+   encoding variants) are treated as the same player.
+
+6. **Team lineup:** The top 11 players by xG/90 are summed to form a team's total
+   attacking output. This is normalized against the population average across all
+   48 qualified teams to produce a dimensionless **attack multiplier** (1.0 = average).
+
+7. **Defensive proxy:** Because only offensive data is available, defensive quality
+   is approximated as `1 / sqrt(attack_multiplier)`. Strong scoring teams tend to
+   be strong overall; this is a deliberate simplification.
+
+8. **Lambda adjustment:**
+   - `adjustedLambdaA = baseLambdaA × (mulA.attack / mulB.defense)`
+   - `adjustedLambdaB = baseLambdaB × (mulB.attack / mulA.defense)`
+   - **Blend:** `finalLambda = 65% × Elo_base + 35% × player_adjusted`
+
+9. **Clamping:** Multipliers are clamped to [0.70, 1.40] to prevent extreme
+   adjustments for teams with sparse or missing data.
+
+#### Caching
+
+The first `player` command downloads `goalscorers.csv` (~3 MB) and saves it as
+`.cache_scorers.csv`. Subsequent calls load from cache instantly. To refresh,
+delete `.cache_scorers.csv`.
+
+#### Limitations
+
+- Only goals scored feed the model — no assists, key passes, or defensive actions.
+- Defensive quality is a rough proxy, not measured directly.
+- Injured, suspended, or otherwise absent key players are not detected.
+- The model distinguishes current vs. older squads only through recency weighting
+  on individual goals, not through actual squad selection data.
+- Weak scoring teams (e.g. Qatar, Haiti) may have limited data coverage;
+  their multipliers fall back toward 1.0 (neutral).
+
+#### Verification
+
+```bash
+node verify-playerxg.js
+```
+
+Runs 94 sanity checks: data loading, name deduplication, elite-player rates,
+multiplier range, prediction output shape, and known-result validation.
+
 ## Data source
 
 Historical international results come from
