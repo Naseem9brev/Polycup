@@ -42,6 +42,7 @@ const {
 } = require('./lineupelo');
 const { buildPlayerModel, PLAYER_BLEND } = require('./playerxg');
 const { buildPenaltyModel } = require('./penalty');
+const { buildMatchXgModel, XG_BLEND } = require('./matchxg');
 
 const DISCLAIMER =
   'Disclaimer: Polycup is a probabilistic model for entertainment only — not betting advice.';
@@ -58,6 +59,7 @@ function parseArgs(argv) {
     rho: undefined,
     format: undefined,
     favorites: undefined,
+    xg: false,
   };
 
   for (const arg of argv) {
@@ -75,6 +77,8 @@ function parseArgs(argv) {
       args.favorites = arg.replace('--favorites=', '').split(',').map((s) => s.trim()).filter(Boolean);
     } else if (/^--no-config$/.test(arg)) {
       args.noConfig = true;
+    } else if (arg === '--xg') {
+      args.xg = true;
     } else if (/^\d+$/.test(arg)) {
       args.sims = Number(arg);
     }
@@ -637,6 +641,178 @@ function printPlayerPrediction(elo, playerModel, teamA, teamB, rho) {
   console.log('');
 }
 
+/**
+ * Handle the "xg <A> vs <B>" command.
+ *
+ * Builds (or reuses) the match-level xG model and shows a side-by-side
+ * comparison:
+ *   - Standard Elo/Dixon-Coles baseline
+ *   - xG goal-rate model prediction (recency + importance-weighted goals)
+ *   - Blended prediction
+ *
+ * @param {object}       elo             - Elo model
+ * @param {object|null}  matchXgModel    - Already-built xG model, or null
+ * @param {string}       line            - The part after "xg " (e.g. "Brazil vs France")
+ * @param {number}       rho             - Dixon-Coles ρ
+ * @param {Function}     setMatchXgModel - Callback to cache the built model
+ */
+async function handleXg(elo, matchXgModel, line, rho, setMatchXgModel) {
+  const parts = line.split(/\s+(?:vs?|v\.?|-)\s+/i);
+  if (parts.length !== 2) {
+    console.log('  Usage: xg <team1> vs <team2>');
+    return;
+  }
+  const teamA = resolveTeam(parts[0].trim());
+  const teamB = resolveTeam(parts[1].trim());
+  if (!teamA || !teamB) {
+    const unknown = !teamA ? parts[0].trim() : parts[1].trim();
+    console.log(`  Unknown team: "${unknown}". Type "teams" to list valid teams.`);
+    return;
+  }
+  if (teamA === teamB) {
+    console.log('  Please pick two different teams.');
+    return;
+  }
+
+  // Build the xG model on first use; cache for subsequent calls.
+  let xgm = matchXgModel;
+  if (!xgm) {
+    try {
+      console.log('  Loading match xG model (first use) ...');
+      xgm = await buildMatchXgModel({ log: (m) => console.log('  ' + m) });
+      setMatchXgModel(xgm);
+    } catch (e) {
+      console.log(`  Match xG model unavailable: ${e.message}`);
+      console.log('  Falling back to standard Elo prediction.\n');
+      printPrediction(elo, teamA, teamB, rho);
+      return;
+    }
+  }
+
+  printXgPrediction(elo, xgm, teamA, teamB, rho);
+}
+
+/**
+ * Render a match-level xG model prediction (experimental).
+ *
+ * Shows three columns side by side:
+ *   1. Elo baseline  — pure Elo/Dixon-Coles (existing model)
+ *   2. xG rate model — goal-rate model from historical scoring data
+ *   3. Blended       — weighted blend of the two
+ */
+function printXgPrediction(elo, xgModel, teamA, teamB, rho) {
+  const hostA = HOSTS.has(teamA);
+  const hostB = HOSTS.has(teamB);
+  const MAX_GOALS = 10;
+
+  // Elo baseline.
+  const base = predictMatch(elo.getRating(teamA), elo.getRating(teamB), hostA, hostB, rho);
+
+  // xG model blended result.
+  const xgResult = xgModel.expectedGoalsXG(teamA, teamB, {
+    eloLambdaFn: expectedGoals,
+    eloA: elo.getRating(teamA),
+    eloB: elo.getRating(teamB),
+    hostA,
+    hostB,
+  });
+
+  // Build score distributions for the xG-rate-only view and the blended view.
+  function scoreStats(lambdaA, lambdaB) {
+    const probs = jointProbabilityMatrix(lambdaA, lambdaB, rho, MAX_GOALS);
+    let pWin = 0, pDraw = 0, pLoss = 0;
+    let best = { p: -1, a: 0, b: 0 };
+    const n = MAX_GOALS + 1;
+    for (let k = 0; k < probs.length; k++) {
+      const i = Math.floor(k / n);
+      const j = k % n;
+      const p = probs[k];
+      if (i > j) pWin += p;
+      else if (i === j) pDraw += p;
+      else pLoss += p;
+      if (p > best.p) best = { p, a: i, b: j };
+    }
+    return { pWin, pDraw, pLoss, scoreline: [best.a, best.b] };
+  }
+
+  const rateStats = scoreStats(xgResult.rateXgA, xgResult.rateXgB);
+  const blendStats = scoreStats(xgResult.xgA, xgResult.xgB);
+
+  const W = 72;
+  const SEP = '  ' + '-'.repeat(W);
+  const HDR = '  ' + '='.repeat(W);
+
+  console.log('');
+  console.log(`  [EXPERIMENTAL] Match-level xG model — ${teamA}  vs  ${teamB}`);
+  console.log(HDR);
+  console.log(`  Blend: ${(XG_BLEND * 100).toFixed(0)}% goal-rate data · ${((1 - XG_BLEND) * 100).toFixed(0)}% Elo`);
+  console.log(SEP);
+
+  // Header row
+  const col1 = 'Elo baseline';
+  const col2 = 'xG rate model';
+  const col3 = 'Blended';
+  console.log(`  ${''.padEnd(22)}${col1.padStart(13)}${col2.padStart(15)}${col3.padStart(12)}`);
+  console.log(SEP);
+
+  // Expected goals rows
+  console.log(`  ${'Expected goals:'.padEnd(22)}${''.padStart(13)}${''.padStart(15)}${''.padStart(12)}`);
+  console.log(
+    `  ${'  ' + teamA + ':'.padEnd(20)}` +
+    `${base.xgA.toFixed(2).padStart(13)}` +
+    `${xgResult.rateXgA.toFixed(2).padStart(15)}` +
+    `${xgResult.xgA.toFixed(2).padStart(12)}`
+  );
+  console.log(
+    `  ${'  ' + teamB + ':'.padEnd(20)}` +
+    `${base.xgB.toFixed(2).padStart(13)}` +
+    `${xgResult.rateXgB.toFixed(2).padStart(15)}` +
+    `${xgResult.xgB.toFixed(2).padStart(12)}`
+  );
+  console.log(SEP);
+
+  // Win probabilities
+  console.log(
+    `  ${(teamA + ' win:').padEnd(22)}` +
+    `${(pct(base.pWin) + '%').padStart(13)}` +
+    `${(pct(rateStats.pWin) + '%').padStart(15)}` +
+    `${(pct(blendStats.pWin) + '%').padStart(12)}`
+  );
+  console.log(
+    `  ${'Draw:'.padEnd(22)}` +
+    `${(pct(base.pDraw) + '%').padStart(13)}` +
+    `${(pct(rateStats.pDraw) + '%').padStart(15)}` +
+    `${(pct(blendStats.pDraw) + '%').padStart(12)}`
+  );
+  console.log(
+    `  ${(teamB + ' win:').padEnd(22)}` +
+    `${(pct(base.pLoss) + '%').padStart(13)}` +
+    `${(pct(rateStats.pLoss) + '%').padStart(15)}` +
+    `${(pct(blendStats.pLoss) + '%').padStart(12)}`
+  );
+  console.log(SEP);
+
+  // Most likely scoreLines
+  const fmtScore = (sl) => `${sl[0]}-${sl[1]}`;
+  console.log(`  Elo most likely score    : ${teamA} ${fmtScore(base.scoreline)} ${teamB}`);
+  console.log(`  xG rate most likely score: ${teamA} ${fmtScore(rateStats.scoreline)} ${teamB}`);
+  console.log(`  Blended most likely score: ${teamA} ${fmtScore(blendStats.scoreline)} ${teamB}`);
+  console.log(SEP);
+
+  // Team strength multipliers
+  const { mulA, mulB } = xgResult;
+  const dataA = mulA.hasData ? `atk ×${mulA.attack.toFixed(3)}, def ×${mulA.defense.toFixed(3)}` : '(no data — avg used)';
+  const dataB = mulB.hasData ? `atk ×${mulB.attack.toFixed(3)}, def ×${mulB.defense.toFixed(3)}` : '(no data — avg used)';
+  console.log(`  ${teamA} xG multipliers: ${dataA}`);
+  console.log(`  ${teamB} xG multipliers: ${dataB}`);
+
+  if (hostA || hostB) console.log('  (host-nation attacking boost applied)');
+  console.log(HDR);
+  console.log('  Note: xG rates are derived from historical goals scored/conceded,');
+  console.log('  recency-weighted and importance-weighted. Results are for exploration only.');
+  console.log('');
+}
+
 const MODEL_TEXT = `· ${new Date().toISOString().slice(0, 10)}`;
 
 /** Write a generated artifact to disk and report the path. */
@@ -700,7 +876,7 @@ function appendHistory(line) {
   }
 }
 
-function startPrompt(elo, odds, rho, favorites, bracket, initialPlayerModel, initialPenaltyModel, fixtures) {
+function startPrompt(elo, odds, rho, favorites, bracket, initialPlayerModel, initialPenaltyModel, initialMatchXgModel, fixtures) {
   const history = loadHistory();
   const rl = readline.createInterface({
     input: process.stdin,
@@ -718,6 +894,8 @@ function startPrompt(elo, odds, rho, favorites, bracket, initialPlayerModel, ini
   let cachedPlayerModel = initialPlayerModel || null;
   // Penalty model is loaded lazily on first `penalty` command; cache it here.
   let cachedPenaltyModel = initialPenaltyModel || null;
+  // Match xG model is loaded lazily on first `xg` command; cache it here.
+  let cachedMatchXgModel = initialMatchXgModel || null;
 
   function finish() {
     console.log('\nThanks for using Polycup!');
@@ -790,6 +968,23 @@ function startPrompt(elo, odds, rho, favorites, bracket, initialPlayerModel, ini
         await handlePlayer(elo, cachedPlayerModel, rest, rho, (pm) => { cachedPlayerModel = pm; });
       } catch (e) {
         console.log(`  Player model error: ${e.message}`);
+      }
+    }
+    else if (lower.startsWith('xg ') || lower === 'xg') {
+      const rest = line.slice('xg'.length).trim();
+      try {
+        await handleXg(elo, cachedMatchXgModel, rest, rho, (m) => { cachedMatchXgModel = m; });
+      } catch (e) {
+        console.log(`  Match xG model error: ${e.message}`);
+      }
+    }
+    else if (lower.startsWith('expectedgoals')) {
+      // Alias: "expectedgoals <A> vs <B>"
+      const rest = line.slice('expectedgoals'.length).trim();
+      try {
+        await handleXg(elo, cachedMatchXgModel, rest, rho, (m) => { cachedMatchXgModel = m; });
+      } catch (e) {
+        console.log(`  Match xG model error: ${e.message}`);
       }
     }
     else if (lower.startsWith('watch')) {
@@ -930,6 +1125,20 @@ async function main() {
     }
   }
 
+  // --xg flag: pre-build the match xG model and note that the default head-to-head
+  // prediction will use xG-blended lambdas instead of pure Elo lambdas.
+  const useXgFlag = cliArgs.xg === true;
+  let initialMatchXgModel = null;
+  if (useXgFlag) {
+    log('[EXPERIMENTAL] --xg flag active: match-level xG model will be used for predictions.');
+    try {
+      initialMatchXgModel = await buildMatchXgModel({ log: (m) => console.log('  ' + m) });
+    } catch (e) {
+      log(`Match xG model unavailable: ${e.message}`);
+      log('Continuing with standard Elo predictions.');
+    }
+  }
+
   log(`Running ${iterations.toLocaleString()} tournament simulations ${seed ? `(seed=${seed}) ` : ''}...`);
   const { odds, bracket } = runMonteCarloDetailed(elo, iterations, {
     rho: effectiveRho,
@@ -981,7 +1190,8 @@ async function main() {
   // Pass null for the player model — it will be built lazily on first `player` command.
   // Pass the pre-built penalty model so the `live` command can use it too.
   // Pass loaded fixtures so the `context` command can look up venues and dates.
-  startPrompt(elo, odds, effectiveRho, favorites, bracket, null, penaltyModel, fixtures);
+  // Pass the match xG model (may be null if --xg was not specified; lazily built on first `xg` command).
+  startPrompt(elo, odds, effectiveRho, favorites, bracket, null, penaltyModel, initialMatchXgModel, fixtures);
 }
 
 main().catch((err) => {

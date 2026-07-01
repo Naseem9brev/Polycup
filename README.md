@@ -247,6 +247,18 @@ All martj42 files are cached locally on first use (`.cache_results.csv`, `.cache
 | K | Portugal, DR Congo, Uzbekistan, Colombia |
 | L | England, Croatia, Ghana, Panama |
 
+## Data & caching
+
+All data comes from [martj42/international_results](https://github.com/martj42/international_results) (free, no API key). Files are cached locally on first run:
+
+| Cache file | Source |
+|---|---|
+| `.cache_results.csv` | Match results (~49k rows) |
+| `.cache_scorers.csv` | Goalscorers (player xG) |
+| `.cache_shootouts.csv` | Penalty shootout history |
+
+Delete any cache file to force a fresh download.
+
 ## Verification
 
 ```bash
