@@ -15,12 +15,15 @@
     "calibration.js",
     "live.js",
     "worldcup2026.js",
+    "playerxg.js",
+    "verify-playerxg.js",
     "LICENSE",
     "README.md"
   ],
   "scripts": {
     "start": "node polycup.js",
-    "build:binary": "node scripts/build-binary.js"
+    "build:binary": "node scripts/build-binary.js",
+    "verify:playerxg": "node verify-playerxg.js"
   },
   "keywords": [
     "world-cup",

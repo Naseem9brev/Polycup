@@ -22,7 +22,7 @@ const path = require('path');
 const os = require('os');
 const { buildEloModel } = require('./elo');
 const { runMonteCarlo, runMonteCarloDetailed, predictMatch, expectedGoals, HOSTS } = require('./simulation');
-const { estimateRhoFromDataset } = require('./dixoncoles');
+const { estimateRhoFromDataset, jointProbabilityMatrix } = require('./dixoncoles');
 const { runBacktest, runAllBacktests } = require('./backtest');
 const { runLiveSimulation } = require('./live');
 const { generateBracketHTML } = require('./bracket');
@@ -32,6 +32,14 @@ const { formatProfile } = require('./profile');
 const { startWatch, listWatchableMatches } = require('./watch');
 const { GROUPS, TEAMS, GROUP_OF, resolveTeam } = require('./worldcup2026');
 const { mergeConfig, loadConfig } = require('./config');
+const { fetchScoreboard, fetchMatchSummary } = require('./datasource');
+const { enrichMatchState } = require('./matchstate');
+const {
+  computeMatchLineupDeltas,
+  extractStarterNames,
+  formatLineupPrediction,
+} = require('./lineupelo');
+const { buildPlayerModel, PLAYER_BLEND } = require('./playerxg');
 
 const DISCLAIMER =
   'Disclaimer: Polycup is a probabilistic model for entertainment only — not betting advice.';
@@ -164,19 +172,21 @@ function printPrediction(elo, teamA, teamB, rho) {
 
 const HELP = `
 Commands:
-  <team1> vs <team2>   head-to-head match prediction (e.g. "Brazil vs France")
-  watch                list today's matches and attach to a live match
-  watch <A> vs <B>     live-track a match with auto-updating predictions
-  titles               reprint the full title-odds table
-  teams                list all 48 qualified teams and their groups
-  backtest [year|all]  validate against 2018 or 2022 World Cup (e.g. "backtest 2022")
-  live                 re-download results, lock played matches, simulate rest
-  profile <team>       show a team's Elo, group, path odds and recent form
-  bracket [file]       write the predicted knockout bracket to an HTML file
-  report [file]        write a full HTML report (odds, groups, paths) to a file
-  export json|csv [f]  export title odds (and head-to-head) as JSON or CSV
-  help                 show this help
-  quit / exit          leave Polycup
+  <team1> vs <team2>        head-to-head match prediction (e.g. "Brazil vs France")
+  lineups <A> vs <B>        lineup-adjusted prediction; fetches live ESPN lineup data
+  player <A> vs <B>         [EXPERIMENTAL] player-level xG prediction vs Elo baseline
+  watch                     list today's matches and attach to a live match
+  watch <A> vs <B>          live-track a match with auto-updating predictions
+  titles                    reprint the full title-odds table
+  teams                     list all 48 qualified teams and their groups
+  backtest [year|all]       validate against 2018 or 2022 World Cup (e.g. "backtest 2022")
+  live                      re-download results, lock played matches, simulate rest
+  profile <team>            show a team's Elo, group, path odds and recent form
+  bracket [file]            write the predicted knockout bracket to an HTML file
+  report [file]             write a full HTML report (odds, groups, paths) to a file
+  export json|csv [f]       export title odds (and head-to-head) as JSON or CSV
+  help                      show this help
+  quit / exit               leave Polycup
 
 Team names are loose: "Brazil", "BRA" and "bra" all resolve to Brazil.
 Common typos are also corrected.
@@ -200,6 +210,232 @@ function handleMatch(elo, line, rho) {
   }
   printPrediction(elo, teamA, teamB, rho);
   return true;
+}
+
+/**
+ * Handle the "lineups <A> vs <B>" command.
+ * Fetches live ESPN lineup data (if the match is on today's scoreboard),
+ * runs the lineup-aware Elo adjustment, and prints a side-by-side comparison
+ * of the base prediction vs. the lineup-adjusted prediction.
+ * Degrades gracefully when ESPN data is unavailable.
+ */
+async function handleLineups(elo, line, rho) {
+  const parts = line.split(/\s+(?:vs?|v\.?|-)\s+/i);
+  if (parts.length !== 2) {
+    console.log('  Usage: lineups <team1> vs <team2>');
+    return;
+  }
+  const teamA = resolveTeam(parts[0].trim());
+  const teamB = resolveTeam(parts[1].trim());
+
+  if (!teamA || !teamB) {
+    const unknown = !teamA ? parts[0].trim() : parts[1].trim();
+    console.log(`  Unknown team: "${unknown}". Type "teams" to list valid teams.`);
+    return;
+  }
+  if (teamA === teamB) {
+    console.log('  Please pick two different teams.');
+    return;
+  }
+
+  const hostA = HOSTS.has(teamA);
+  const hostB = HOSTS.has(teamB);
+  const baseEloA = elo.getRating(teamA);
+  const baseEloB = elo.getRating(teamB);
+
+  // Base prediction (no lineup adjustment)
+  const basePred = predictMatch(baseEloA, baseEloB, hostA, hostB, rho);
+
+  // Try to fetch today's ESPN lineup data
+  let startersA = [];
+  let startersB = [];
+
+  console.log(`  Fetching lineup data for ${teamA} vs ${teamB} from ESPN...`);
+  try {
+    const scoreboard = await fetchScoreboard();
+    const nameA = teamA.toLowerCase();
+    const nameB = teamB.toLowerCase();
+    const match = scoreboard.find(m => {
+      const h = m.home.name.toLowerCase();
+      const a = m.away.name.toLowerCase();
+      return (h.includes(nameA) && a.includes(nameB)) ||
+             (h.includes(nameB) && a.includes(nameA));
+    });
+
+    if (match) {
+      const summary = await fetchMatchSummary(match.id);
+      const state = enrichMatchState(match, summary);
+      if (state.lineups) {
+        const { startersA: sA, startersB: sB } = extractStarterNames(
+          state.lineups, teamA, teamB
+        );
+        startersA = sA;
+        startersB = sB;
+      }
+      if (startersA.length === 0 && startersB.length === 0) {
+        console.log('  Lineup data not yet available (match may not have started).');
+        console.log('  Showing base prediction with database-seeded key players.\n');
+      } else {
+        console.log(`  Got lineups: ${startersA.length} starters for ${teamA}, ${startersB.length} for ${teamB}.`);
+      }
+    } else {
+      console.log(`  Match not found on today's ESPN scoreboard.`);
+      console.log('  Showing base prediction only (no live lineup data).\n');
+    }
+  } catch (e) {
+    console.log(`  ESPN data unavailable (${e.message}).`);
+    console.log('  Showing base prediction only.\n');
+  }
+
+  // Compute lineup deltas
+  const { home: homeResult, away: awayResult } =
+    computeMatchLineupDeltas(teamA, startersA, teamB, startersB);
+
+  // Lineup-adjusted prediction
+  const adjEloA = baseEloA + homeResult.delta;
+  const adjEloB = baseEloB + awayResult.delta;
+  const adjPred = predictMatch(adjEloA, adjEloB, hostA, hostB, rho);
+
+  // Print
+  console.log(formatLineupPrediction(
+    teamA, teamB,
+    homeResult, awayResult,
+    baseEloA, baseEloB,
+    basePred, adjPred
+  ));
+}
+
+/**
+ * Handle the "player <A> vs <B>" command.
+ *
+ * Builds (or reuses) the player xG model and shows a side-by-side comparison:
+ *   - Standard Elo/Dixon-Coles baseline
+ *   - Player-adjusted prediction derived from historical goal-scoring data
+ *
+ * Degrades gracefully if the player model is unavailable (shows Elo only).
+ *
+ * @param {object}       elo          - Elo model
+ * @param {object|null}  playerModel  - Already-built player model, or null if
+ *                                      it hasn't been loaded yet
+ * @param {string}       line         - The part after "player " (e.g. "Brazil vs France")
+ * @param {number}       rho          - Dixon-Coles ρ
+ * @param {Function}     setPlayerModel - Callback to cache the built model
+ */
+async function handlePlayer(elo, playerModel, line, rho, setPlayerModel) {
+  const parts = line.split(/\s+(?:vs?|v\.?|-)\s+/i);
+  if (parts.length !== 2) {
+    console.log('  Usage: player <team1> vs <team2>');
+    return;
+  }
+  const teamA = resolveTeam(parts[0].trim());
+  const teamB = resolveTeam(parts[1].trim());
+  if (!teamA || !teamB) {
+    const unknown = !teamA ? parts[0].trim() : parts[1].trim();
+    console.log(`  Unknown team: "${unknown}". Type "teams" to list valid teams.`);
+    return;
+  }
+  if (teamA === teamB) {
+    console.log('  Please pick two different teams.');
+    return;
+  }
+
+  // Build the player model on first use; cache for subsequent calls.
+  let pm = playerModel;
+  if (!pm) {
+    try {
+      console.log('  Loading player model (first use — may download ~3 MB) ...');
+      pm = await buildPlayerModel({ log: (m) => console.log('  ' + m) });
+      setPlayerModel(pm);
+    } catch (e) {
+      console.log(`  Player model unavailable: ${e.message}`);
+      console.log('  Falling back to standard Elo prediction.\n');
+      printPrediction(elo, teamA, teamB, rho);
+      return;
+    }
+  }
+
+  printPlayerPrediction(elo, pm, teamA, teamB, rho);
+}
+
+/**
+ * Render a player-model head-to-head prediction (experimental).
+ *
+ * Shows the standard Elo/Dixon-Coles baseline alongside the player-adjusted
+ * prediction so the user can directly compare the two models.
+ */
+function printPlayerPrediction(elo, playerModel, teamA, teamB, rho) {
+  const hostA = HOSTS.has(teamA);
+  const hostB = HOSTS.has(teamB);
+  const MAX_GOALS = 10;
+
+  // Standard Elo prediction (baseline).
+  const base = predictMatch(elo.getRating(teamA), elo.getRating(teamB), hostA, hostB, rho);
+
+  // Player-adjusted lambdas.
+  const pr = playerModel.predictMatchPlayerBased(
+    elo.getRating(teamA),
+    elo.getRating(teamB),
+    teamA,
+    teamB,
+    hostA,
+    hostB,
+    expectedGoals
+  );
+
+  // Compute win/draw/loss from the player-adjusted lambdas using the same
+  // Dixon-Coles joint probability matrix already imported.
+  const adjProbs = jointProbabilityMatrix(pr.lambdaA, pr.lambdaB, rho, MAX_GOALS);
+  let pWin = 0, pDraw = 0, pLoss = 0;
+  let bestAdj = { p: -1, a: 0, b: 0 };
+  const n = MAX_GOALS + 1;
+  for (let k = 0; k < adjProbs.length; k++) {
+    const i = Math.floor(k / n);
+    const j = k % n;
+    const p = adjProbs[k];
+    if (i > j) pWin += p;
+    else if (i === j) pDraw += p;
+    else pLoss += p;
+    if (p > bestAdj.p) bestAdj = { p, a: i, b: j };
+  }
+
+  const top5 = (arr) =>
+    arr.length > 0
+      ? arr.slice(0, 5).map((p) => p.name).join(', ')
+      : '(no data)';
+
+  const W = 60;
+  const SEP = '  ' + '-'.repeat(W);
+  const HDR = '  ' + '='.repeat(W);
+
+  console.log('');
+  console.log(`  [EXPERIMENTAL] Player-level xG — ${teamA}  vs  ${teamB}`);
+  console.log(HDR);
+  console.log(`  Blend: ${(PLAYER_BLEND * 100).toFixed(0)}% player data · ${((1 - PLAYER_BLEND) * 100).toFixed(0)}% Elo`);
+  console.log(SEP);
+
+  const col1 = 'Elo baseline';
+  const col2 = 'Player-adjusted';
+  console.log(`  ${''.padEnd(22)}${col1.padStart(14)}${col2.padStart(16)}`);
+  console.log(SEP);
+  console.log(`  ${'Expected goals:'.padEnd(22)}${''.padStart(14)}${''.padStart(16)}`);
+  console.log(`  ${'  ' + teamA + ':'.padEnd(20)}${base.xgA.toFixed(2).padStart(14)}${pr.lambdaA.toFixed(2).padStart(16)}`);
+  console.log(`  ${'  ' + teamB + ':'.padEnd(20)}${base.xgB.toFixed(2).padStart(14)}${pr.lambdaB.toFixed(2).padStart(16)}`);
+  console.log(SEP);
+  console.log(`  ${(teamA + ' win:').padEnd(22)}${(pct(base.pWin) + '%').padStart(14)}${(pct(pWin) + '%').padStart(16)}`);
+  console.log(`  ${'Draw:'.padEnd(22)}${(pct(base.pDraw) + '%').padStart(14)}${(pct(pDraw) + '%').padStart(16)}`);
+  console.log(`  ${(teamB + ' win:').padEnd(22)}${(pct(base.pLoss) + '%').padStart(14)}${(pct(pLoss) + '%').padStart(16)}`);
+  console.log(SEP);
+  console.log(`  Elo most likely score    : ${teamA} ${base.scoreline[0]}-${base.scoreline[1]} ${teamB}`);
+  console.log(`  Player most likely score : ${teamA} ${bestAdj.a}-${bestAdj.b} ${teamB}`);
+  console.log(SEP);
+  console.log(`  ${teamA} key players : ${top5(pr.playersA)}`);
+  console.log(`  ${teamB} key players : ${top5(pr.playersB)}`);
+  console.log(`  Attack multipliers — ${teamA}: ×${pr.mulA.attack.toFixed(3)}, ${teamB}: ×${pr.mulB.attack.toFixed(3)}`);
+  if (hostA || hostB) console.log('  (host-nation home advantage applied)');
+  console.log(HDR);
+  console.log('  Note: only historical goals scored are used as a proxy for player quality.');
+  console.log('  Defensive ratings are approximated. Results are for exploration only.');
+  console.log('');
 }
 
 const MODEL_TEXT = `· ${new Date().toISOString().slice(0, 10)}`;
@@ -265,7 +501,7 @@ function appendHistory(line) {
   }
 }
 
-function startPrompt(elo, odds, rho, favorites, bracket) {
+function startPrompt(elo, odds, rho, favorites, bracket, initialPlayerModel) {
   const history = loadHistory();
   const rl = readline.createInterface({
     input: process.stdin,
@@ -279,6 +515,8 @@ function startPrompt(elo, odds, rho, favorites, bracket) {
   const queue = [];
   let busy = false;
   let closeRequested = false;
+  // Player model is loaded lazily on first `player` command; cache it here.
+  let cachedPlayerModel = initialPlayerModel || null;
 
   function finish() {
     console.log('\nThanks for using Polycup!');
@@ -325,6 +563,22 @@ function startPrompt(elo, odds, rho, favorites, bracket) {
         printTitleTable(liveOdds, new Set(favorites));
       } catch (e) {
         console.log(`  Live error: ${e.message}`);
+      }
+    }
+    else if (lower.startsWith('lineups')) {
+      const rest = line.slice('lineups'.length).trim();
+      try {
+        await handleLineups(elo, rest, rho);
+      } catch (e) {
+        console.log(`  Lineups error: ${e.message}`);
+      }
+    }
+    else if (lower.startsWith('player')) {
+      const rest = line.slice('player'.length).trim();
+      try {
+        await handlePlayer(elo, cachedPlayerModel, rest, rho, (pm) => { cachedPlayerModel = pm; });
+      } catch (e) {
+        console.log(`  Player model error: ${e.message}`);
       }
     }
     else if (lower.startsWith('watch')) {
@@ -479,7 +733,8 @@ async function main() {
   }
 
   printTitleTable(odds, new Set(favorites));
-  startPrompt(elo, odds, effectiveRho, favorites, bracket);
+  // Pass null for the player model — it will be built lazily on first `player` command.
+  startPrompt(elo, odds, effectiveRho, favorites, bracket, null);
 }
 
 main().catch((err) => {
