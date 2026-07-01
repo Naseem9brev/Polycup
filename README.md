@@ -37,6 +37,9 @@ in every match already played, and only simulates the fixtures still to come.
   fixed-seeding knockout bracket.
 - **Live mode** — locks played matches and only simulates the rest once the
   tournament starts.
+- **Watch mode** — attach to a live match and get auto-updating win/draw/loss
+  probabilities, predicted final score, and event-driven model adjustments
+  (red cards, momentum) via ESPN's public API. No API key needed.
 - **Backtest** — validate against the 2018 and 2022 World Cups with accuracy,
   log-loss, Brier score, and Expected Calibration Error.
 - **Interactive CLI** — fuzzy team names, title-odds table, and head-to-head
@@ -226,6 +229,8 @@ After the simulation runs and prints the title-odds table, you get a prompt:
 
 ```
 > Brazil vs France     # head-to-head match prediction
+> watch                # list today's live matches
+> watch USA vs Mexico  # attach to a live match with auto-updating predictions
 > titles               # reprint the full title-odds table
 > teams                # list all 48 qualified teams + groups
 > profile Brazil       # team card: Elo, path odds, recent form, group schedule
@@ -289,6 +294,9 @@ fourteen files:
 | `report.js` | Generates a single self-contained HTML report: title odds, expected group standings, and team path probabilities. |
 | `export.js` | JSON and CSV exporters for the title odds and the full head-to-head prediction matrix. |
 | `profile.js` | Renders a per-team text profile card (Elo, group, path odds, recent form, group-stage schedule). |
+| `watch.js` | Live match watcher: polls ESPN every 30s for scores/events, feeds match state into the prediction engine, and renders an auto-refreshing terminal display. |
+| `datasource.js` | ESPN public API fetcher (no auth required): live scores, lineups, formations, match events for the World Cup. |
+| `matchstate.js` | Converts raw ESPN data into model-friendly state: classifies events, counts red cards, computes momentum, and derives Elo adjustments. |
 | `config.js` | Loads defaults from `~/.polycup/config.json` and `.polycuprc.json`, validated and merged under CLI flags. |
 | `rng.js` | Seedable pseudo-random number generator (sfc32) with a swappable global hook, enabling reproducible and resumable Monte Carlo runs. |
 | `worldcup2026.js` | The 48 qualified teams, their group assignments, the name mapping between this project's display names and the dataset's spellings (plus loose CLI aliases), and fuzzy typo matching. |
@@ -388,6 +396,38 @@ standings and any knockout results already in the book.
 It uses the same 2026 bracket template, group standings, and third-place
 assignment as the main simulation, so the locked results flow naturally into
 the rest of the bracket.
+
+### Watch mode — live in-match predictions (`watch.js`)
+
+Attach to a live match and get continuously updating predictions as goals,
+cards, and substitutions happen:
+
+```
+> watch                    # list today's World Cup matches
+> watch France vs Sweden   # attach to that match
+```
+
+The display auto-refreshes every 30 seconds, showing:
+
+- **Live score + match minute**
+- **Win/Draw/Loss probability bars** — update as events change the match state
+- **Predicted final score** — the single most likely outcome given current state
+- **Top 5 most likely scorelines** with probabilities
+- **Remaining expected goals** — how much attacking output each team is expected
+  to produce in the time left
+- **Red card indicators** — a red card reduces the affected team's effective Elo
+- **Match event timeline** — goals, cards, substitutions as they happen
+
+The model works by:
+
+1. Computing full-match expected goals from pre-match Elo (same as `predictMatch`)
+2. Scaling xG by remaining time: `remainingXG = fullXG × (minutesLeft / 90)`
+3. Applying state modifiers: red card = −60 Elo (scaled by remaining time),
+   momentum = +15 Elo per goal in the last 10 minutes
+4. Running Dixon-Coles on the *remaining* goals to get P(each possible final score)
+
+Data comes from ESPN's public API (no API key, no signup). Press `q` + Enter to
+exit watch mode and return to the interactive prompt.
 
 ## Data source
 
