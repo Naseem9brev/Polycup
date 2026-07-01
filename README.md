@@ -1,4 +1,16 @@
-# Polycup
+<p align="center">
+  ⚽🏆🇺🇸🇲🇽🇨🇦🇧🇷🇦🇷🇫🇷🇩🇪🇪🇸🇳🇱🇵🇹🇮🇹🇧🇪🇺🇾🇭🇷🇯🇵🇰🇷🇲🇦⚽🏆
+</p>
+
+<h1 align="center">⚽ Polycup 🏆</h1>
+
+<p align="center">
+  <strong>Node.js · Elo · Dixon-Coles · Poisson · Monte Carlo</strong>
+</p>
+
+<p align="center">
+  🏆🇫🇷⚽🇧🇷🇦🇷🇩🇪🇺🇸🇲🇽🇨🇦🇪🇸🇳🇱🇵🇹🇮🇹🇧🇪🇺🇾🇭🇷🇯🇵🇰🇷🇲🇦⚽🏆
+</p>
 
 A dependency-free Node.js CLI that predicts the **2026 FIFA World Cup**. It
 computes Elo ratings from ~49,000 historical international matches, feeds them
@@ -38,6 +50,91 @@ in every match already played, and only simulates the fixtures still to come.
 - Node.js **>= 18** (uses the built-in global `fetch`; developed on Node 24).
 - **No `npm install` step.** There are zero third-party dependencies.
 
+## Installation
+
+Choose whichever method fits your workflow. Polycup itself has no dependencies.
+
+### npm / npx
+
+Install globally:
+
+```bash
+npm install -g polycup
+polycup
+```
+
+Or run without installing:
+
+```bash
+npx polycup
+```
+
+### From source
+
+Clone the repository and link the command locally:
+
+```bash
+git clone https://github.com/avikabra/Polycup.git
+cd Polycup
+npm link        # then run:
+polycup
+```
+
+### Docker
+
+A minimal image is published to the GitHub Container Registry:
+
+```bash
+docker pull ghcr.io/avikabra/polycup:latest
+docker run --rm -it ghcr.io/avikabra/polycup:latest
+```
+
+Or build the image yourself:
+
+```bash
+docker build -t polycup .
+docker run --rm -it polycup
+```
+
+The container runs `polycup.js` as its entrypoint. Pass the usual arguments:
+
+```bash
+docker run --rm -it polycup --sims=50000
+```
+
+### Prebuilt binary
+
+Download the single-file binary for your platform from the
+[GitHub Releases](https://github.com/avikabra/Polycup/releases) page:
+
+```bash
+# macOS example
+chmod +x polycup-macos
+./polycup-macos
+```
+
+To build a binary locally, run:
+
+```bash
+npm run build:binary
+./dist/polycup
+```
+
+This uses Node.js [Single Executable Applications](https://nodejs.org/api/single-executable-applications.html)
+(`--experimental-sea-config`). It needs Node.js >= 20.6; `postject` is resolved
+automatically via `npx` at build time and is **not** added to the package.
+
+> **Note for local macOS builds:** Node 24's macOS binary may contain the SEA
+> sentinel string more than once, which causes `postject` to fail. If that
+> happens, download Node 20/22 for macOS and point the build script to it:
+>
+> ```bash
+> SEA_NODE_BIN=/path/to/node-20 npm run build:binary
+> ```
+>
+> The GitHub Actions release workflow already uses Node 20, so the published
+> release binaries are not affected.
+
 ## Usage
 
 Run directly:
@@ -46,11 +143,9 @@ Run directly:
 node polycup.js
 ```
 
-Or, optionally, install it as a global command (no third-party deps are pulled
-in):
+Or, after installing via any method above, simply run:
 
 ```bash
-npm link        # then run:
 polycup
 ```
 
@@ -60,6 +155,43 @@ Configure the number of Monte Carlo iterations (default 10,000):
 node polycup.js --sims=50000
 node polycup.js 2000
 ```
+
+### Options & configuration
+
+| Flag | Purpose |
+|---|---|
+| `--sims=N` (or a bare number) | number of Monte Carlo iterations (default 10,000) |
+| `--seed=VALUE` | seed the RNG for fully reproducible runs |
+| `--resume` | resume an interrupted seeded run from `.polycup_progress.json` |
+| `--rho=VALUE` | override the estimated Dixon-Coles ρ |
+| `--format=json` | print title odds as JSON and exit (no prompt) |
+| `--favorites=A,B` | highlight favorite teams in the odds table |
+| `--no-config` | ignore config files for this run |
+
+Defaults can be stored in a config file so you don't have to pass flags every
+time. Polycup reads, in order (later overrides earlier, and CLI flags override
+both):
+
+1. `~/.polycup/config.json` — global user defaults
+2. `.polycuprc.json` — project-local defaults in the working directory
+
+```json
+{
+  "sims": 20000,
+  "seed": "wc2026",
+  "favorites": ["Brazil", "France"],
+  "format": "table"
+}
+```
+
+Reproducibility: with `--seed`, the same seed always produces identical odds.
+A seeded run also checkpoints progress every 1,000 iterations, so a long run
+interrupted with Ctrl-C can be continued with `--seed=... --resume`.
+
+Team names are fuzzy-matched: in addition to aliases and prefixes, common typos
+(`Brazl`, `Frnace`, `Swizerland`) resolve to the intended team via edit distance.
+The interactive prompt also keeps a command history (up-arrow) in
+`~/.polycup_history`.
 
 ### Shareable output (presentation)
 
@@ -148,7 +280,7 @@ Per the official FIFA final draw (5 December 2025, Washington, D.C.):
 ## How it works
 
 The pipeline is **Elo → expected goals → Dixon-Coles/Poisson → Monte Carlo**, split across
-twelve files:
+fourteen files:
 
 | File | Responsibility |
 |---|---|
@@ -165,7 +297,9 @@ twelve files:
 | `watch.js` | Live match watcher: polls ESPN every 30s for scores/events, feeds match state into the prediction engine, and renders an auto-refreshing terminal display. |
 | `datasource.js` | ESPN public API fetcher (no auth required): live scores, lineups, formations, match events for the World Cup. |
 | `matchstate.js` | Converts raw ESPN data into model-friendly state: classifies events, counts red cards, computes momentum, and derives Elo adjustments. |
-| `worldcup2026.js` | The 48 qualified teams, their group assignments, and the name mapping between this project's display names and the dataset's spellings (plus loose CLI aliases). |
+| `config.js` | Loads defaults from `~/.polycup/config.json` and `.polycuprc.json`, validated and merged under CLI flags. |
+| `rng.js` | Seedable pseudo-random number generator (sfc32) with a swappable global hook, enabling reproducible and resumable Monte Carlo runs. |
+| `worldcup2026.js` | The 48 qualified teams, their group assignments, the name mapping between this project's display names and the dataset's spellings (plus loose CLI aliases), and fuzzy typo matching. |
 | `polycup.js` | The CLI entry point: wires everything together, runs the simulation, renders the title-odds table, and launches the interactive prompt. |
 
 ### Elo model (`elo.js`)
