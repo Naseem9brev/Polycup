@@ -64,10 +64,11 @@ jobs:
       - name: Rename artifacts for release
         run: |
           mkdir -p release
-          chmod -R +x artifacts/*/dist/*
-          cp artifacts/polycup-linux/dist/polycup release/polycup-linux
-          cp artifacts/polycup-macos/dist/polycup release/polycup-macos
-          cp artifacts/polycup-windows/dist/polycup.exe release/polycup-windows.exe
+          chmod +x artifacts/polycup-linux/polycup
+          chmod +x artifacts/polycup-macos/polycup
+          cp artifacts/polycup-linux/polycup release/polycup-linux
+          cp artifacts/polycup-macos/polycup release/polycup-macos
+          cp artifacts/polycup-windows/polycup.exe release/polycup-windows.exe
 
       - name: Create draft release
         env:
