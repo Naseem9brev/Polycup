@@ -44,6 +44,10 @@ in every match already played, and only simulates the fixtures still to come.
   teams; automatically adjusts a team's effective Elo when star players are
   confirmed absent from the starting XI. Use `lineups <A> vs <B>` to see a
   side-by-side base vs. adjusted prediction for any match-day lineup.
+- **Club form model** — [EXPERIMENTAL] estimates national team strength from
+  players' recent club minutes, league strength, and club performance stats.
+  No transfer market values used. Use `clubform <A> vs <B>` to compare base
+  Elo predictions against club-form-adjusted predictions.
 - **Backtest** — validate against the 2018 and 2022 World Cups with accuracy,
   log-loss, Brier score, and Expected Calibration Error.
 - **Interactive CLI** — fuzzy team names, title-odds table, and head-to-head
@@ -233,6 +237,7 @@ After the simulation runs and prints the title-odds table, you get a prompt:
 
 ```
 > Brazil vs France          # head-to-head match prediction
+> clubform Brazil vs France # [EXPERIMENTAL] club-form-adjusted prediction vs Elo baseline
 > penalty Brazil vs France  # penalty shootout prediction (alias: shootout)
 > player Brazil vs France   # [EXPERIMENTAL] player-level xG prediction alongside Elo
 > lineups Brazil vs France  # lineup-adjusted prediction (fetches live ESPN data)
@@ -314,6 +319,8 @@ seventeen files:
 | `verify-playerxg.js` | Verification script for the player xG model: runs 94 sanity checks covering data loading, deduplication, elite-player rates, multiplier bounds, prediction shape, and known-result validation. |
 | `penalty.js` | Penalty shootout model (Phase 10): downloads and caches `shootouts.csv`, blends historical shootout results, Elo pressure, taker quality, and host bonus to predict tied knockout matches. |
 | `verify-penalty.js` | Verification script for the penalty shootout model: runs 31 deterministic assertions covering output shape, probability bounds, ordering, degradation, and simulation integration. |
+| `clubform.js` | **[EXPERIMENTAL]** Club form model (Phase 13): estimates national team strength from players' recent club minutes, league strength (based on UEFA coefficients), and club performance stats. No transfer market values used. |
+| `verify-clubform.js` | Verification script for the club form model: runs 15 deterministic tests covering league strength index, player scoring, club strength calculations, Elo adjustments, and system integration. |
 | `polycup.js` | The CLI entry point: wires everything together, runs the simulation, renders the title-odds table, and launches the interactive prompt. |
 
 ### Elo model (`elo.js`)
