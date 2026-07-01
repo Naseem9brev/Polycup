@@ -17,13 +17,16 @@
     "worldcup2026.js",
     "playerxg.js",
     "verify-playerxg.js",
+    "penalty.js",
+    "verify-penalty.js",
     "LICENSE",
     "README.md"
   ],
   "scripts": {
     "start": "node polycup.js",
     "build:binary": "node scripts/build-binary.js",
-    "verify:playerxg": "node verify-playerxg.js"
+    "verify:playerxg": "node verify-playerxg.js",
+    "verify:penalty": "node verify-penalty.js"
   },
   "keywords": [
     "world-cup",

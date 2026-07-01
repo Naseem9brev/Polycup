@@ -78,7 +78,7 @@ function simulateGroupWithLocks(teams, ratings, rho, playedGroupMatches) {
 }
 
 /** Decide a knockout tie. Returns winner team name. */
-function knockoutWinnerTeam(a, b, ratings, rho) {
+function knockoutWinnerTeam(a, b, ratings, rho, penaltyModel = null) {
   const rA = ratings[a] || 1000;
   const rB = ratings[b] || 1000;
   const hostA = HOSTS.has(a);
@@ -87,6 +87,17 @@ function knockoutWinnerTeam(a, b, ratings, rho) {
   const { ga, gb } = sampleDixonColes(la, lb, rho, MAX_GOALS);
   if (ga > gb) return a;
   if (gb > ga) return b;
+
+  // Prefer the dedicated penalty shootout model if available.
+  if (penaltyModel) {
+    try {
+      const { pA } = penaltyModel.predictPenaltyShootout(a, b, { hostA, hostB });
+      return rng() < pA ? a : b;
+    } catch (e) {
+      // Fall back to the Elo-damped model.
+    }
+  }
+
   const e = 1 / (1 + Math.pow(10, ((rB + (hostB ? 65 : 0)) - (rA + (hostA ? 65 : 0))) / 400));
   const pA = 0.5 + (e - 0.5) * 0.5;
   return rng() < pA ? a : b;
@@ -96,7 +107,7 @@ function knockoutWinnerTeam(a, b, ratings, rho) {
  * Run one live tournament simulation. `played` is an array of already-played
  * 2026 World Cup matches with actual scores. Returns { team: furthestStage }.
  */
-function simLiveTournament(ratings, rho, played) {
+function simLiveTournament(ratings, rho, played, penaltyModel = null) {
   // Split played matches into group stage and knockout by chronological position.
   // First 72 (12 groups * 6) are group stage; the rest are knockout.
   const playedSorted = played.slice().sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
@@ -155,7 +166,7 @@ function simLiveTournament(ratings, rho, played) {
       winner = getMatchResult(playedMatch) === 'H' ? playedMatch.home : playedMatch.away;
       matchScore[m.n] = [playedMatch.homeScore, playedMatch.awayScore];
     } else {
-      winner = knockoutWinnerTeam(teamA, teamB, ratings, rho);
+      winner = knockoutWinnerTeam(teamA, teamB, ratings, rho, penaltyModel);
       matchScore[m.n] = null;
     }
     markReach(teamA, 'R32');
@@ -176,7 +187,7 @@ function simLiveTournament(ratings, rho, played) {
       winner = getMatchResult(playedMatch) === 'H' ? playedMatch.home : playedMatch.away;
       matchScore[m.n] = [playedMatch.homeScore, playedMatch.awayScore];
     } else {
-      winner = knockoutWinnerTeam(teamA, teamB, ratings, rho);
+      winner = knockoutWinnerTeam(teamA, teamB, ratings, rho, penaltyModel);
       matchScore[m.n] = null;
     }
     matchWinner[m.n] = winner;
@@ -190,7 +201,7 @@ function simLiveTournament(ratings, rho, played) {
  * Run the live Monte Carlo simulation. Re-downloads the dataset, recomputes
  * Elo ratings, and simulates the remaining 2026 tournament `iterations` times.
  */
-async function runLiveSimulation({ iterations = 10000, log = console.log, onProgress, seed } = {}) {
+async function runLiveSimulation({ iterations = 10000, log = console.log, onProgress, seed, penaltyModel = null } = {}) {
   log('\n=== Live 2026 World Cup simulation ===');
   log('Refreshing dataset ...');
   const { buildEloModel } = require('./elo');
@@ -213,7 +224,7 @@ async function runLiveSimulation({ iterations = 10000, log = console.log, onProg
 
   for (let i = 0; i < iterations; i++) {
     if (seed) setRng(makeIterationRng(seed, i));
-    const reached = simLiveTournament(ratings, rho, played2026);
+    const reached = simLiveTournament(ratings, rho, played2026, penaltyModel);
     if (seed) resetRng();
     for (const [team, stage] of Object.entries(reached)) {
       const rank = { R32: 1, R16: 2, QF: 3, SF: 4, FINAL: 5, CHAMPION: 6 }[stage];

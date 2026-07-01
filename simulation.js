@@ -200,12 +200,23 @@ function simMatch(eloA, eloB, hostA, hostB, rho = DEFAULT_RHO) {
 }
 
 /** Decide a knockout tie. Returns winner index (0 = A, 1 = B). */
-function knockoutWinner(eloA, eloB, hostA, hostB, rho = DEFAULT_RHO) {
+function knockoutWinner(eloA, eloB, hostA, hostB, rho = DEFAULT_RHO, teamA = null, teamB = null, penaltyModel = null) {
   const [lambdaA, lambdaB] = expectedGoals(eloA, eloB, hostA, hostB, true);
   const { ga, gb } = sampleDixonColes(lambdaA, lambdaB, rho, MAX_GOALS);
   if (ga > gb) return 0;
   if (gb > ga) return 1;
-  // Penalty shootout, lightly weighted by Elo (not a coin flip).
+
+  // Penalty shootout. Prefer the dedicated penalty model if teams and model are available.
+  if (penaltyModel && teamA && teamB) {
+    try {
+      const { pA } = penaltyModel.predictPenaltyShootout(teamA, teamB, { hostA, hostB });
+      return rng() < pA ? 0 : 1;
+    } catch (e) {
+      // Graceful fallback to the Elo-damped model if the penalty model errors.
+    }
+  }
+
+  // Fallback: lightly weighted by Elo (not a coin flip).
   const e = eloExpected(eloA + (hostA ? HOST_ELO_BONUS : 0), eloB + (hostB ? HOST_ELO_BONUS : 0));
   const pA = 0.5 + (e - 0.5) * PEN_DAMPING;
   return rng() < pA ? 0 : 1;
@@ -349,7 +360,7 @@ const STAGE_RANK = { GROUP: 0, R32: 1, R16: 2, QF: 3, SF: 4, FINAL: 5, CHAMPION:
  * Simulate one full tournament. Returns { team: furthestStageName } for the
  * 32 knockout teams; teams not present exited in the group stage.
  */
-function simTournament(ratings, rho = DEFAULT_RHO) {
+function simTournament(ratings, rho = DEFAULT_RHO, penaltyModel = null) {
   // Group stage.
   const winners = {};
   const runners = {};
@@ -391,7 +402,7 @@ function simTournament(ratings, rho = DEFAULT_RHO) {
     const teamB = m.b.t === 'third' ? thirdByGroup[thirdAssignment[m.n]] : resolveSlot(m.b);
     markReach(teamA, 'R32');
     markReach(teamB, 'R32');
-    const w = knockoutWinner(ratings[teamA], ratings[teamB], matchHost(teamA), matchHost(teamB), rho);
+    const w = knockoutWinner(ratings[teamA], ratings[teamB], matchHost(teamA), matchHost(teamB), rho, teamA, teamB, penaltyModel);
     matchWinner[m.n] = w === 0 ? teamA : teamB;
   }
 
@@ -402,7 +413,7 @@ function simTournament(ratings, rho = DEFAULT_RHO) {
     const stage = ROUND_OF[m.n];
     markReach(teamA, stage);
     markReach(teamB, stage);
-    const w = knockoutWinner(ratings[teamA], ratings[teamB], matchHost(teamA), matchHost(teamB), rho);
+    const w = knockoutWinner(ratings[teamA], ratings[teamB], matchHost(teamA), matchHost(teamB), rho, teamA, teamB, penaltyModel);
     const winner = w === 0 ? teamA : teamB;
     matchWinner[m.n] = winner;
     if (m.n === 103) markReach(winner, 'CHAMPION');
@@ -416,7 +427,7 @@ function simTournament(ratings, rho = DEFAULT_RHO) {
  * Returns { reached, bracket } where bracket is a map of match number to
  * { a: team, b: team, winner: team } for that simulation.
  */
-function simTournamentDetailed(ratings, rho = DEFAULT_RHO) {
+function simTournamentDetailed(ratings, rho = DEFAULT_RHO, penaltyModel = null) {
   const reached = {};
   const bracket = {};
   const markReach = (team, stage) => {
@@ -458,7 +469,7 @@ function simTournamentDetailed(ratings, rho = DEFAULT_RHO) {
     const teamB = resolveSlot(m.b, m.n);
     markReach(teamA, 'R32');
     markReach(teamB, 'R32');
-    const w = knockoutWinner(ratings[teamA], ratings[teamB], matchHost(teamA), matchHost(teamB), rho);
+    const w = knockoutWinner(ratings[teamA], ratings[teamB], matchHost(teamA), matchHost(teamB), rho, teamA, teamB, penaltyModel);
     const winner = w === 0 ? teamA : teamB;
     matchWinner[m.n] = winner;
     bracket[m.n] = { a: teamA, b: teamB, winner };
@@ -471,7 +482,7 @@ function simTournamentDetailed(ratings, rho = DEFAULT_RHO) {
     const stage = ROUND_OF[m.n];
     markReach(teamA, stage);
     markReach(teamB, stage);
-    const w = knockoutWinner(ratings[teamA], ratings[teamB], matchHost(teamA), matchHost(teamB), rho);
+    const w = knockoutWinner(ratings[teamA], ratings[teamB], matchHost(teamA), matchHost(teamB), rho, teamA, teamB, penaltyModel);
     const winner = w === 0 ? teamA : teamB;
     matchWinner[m.n] = winner;
     bracket[m.n] = { a: teamA, b: teamB, winner };
@@ -485,7 +496,7 @@ function simTournamentDetailed(ratings, rho = DEFAULT_RHO) {
  * Run the Monte Carlo simulation `iterations` times and tally how often each
  * team reaches each stage. Returns per-team probabilities (0..1).
  */
-function runMonteCarlo(eloModel, iterations = 10000, { rho = DEFAULT_RHO, onProgress, seed, resume = false } = {}) {
+function runMonteCarlo(eloModel, iterations = 10000, { rho = DEFAULT_RHO, onProgress, seed, resume = false, penaltyModel = null } = {}) {
   const allTeams = Object.values(GROUPS).flat();
   // Snapshot ratings into a plain map for speed.
   const ratings = {};
@@ -521,7 +532,7 @@ function runMonteCarlo(eloModel, iterations = 10000, { rho = DEFAULT_RHO, onProg
 
   for (let i = startIteration; i < iterations; i++) {
     if (seed) setRng(makeIterationRng(seed, i));
-    const reached = simTournament(ratings, rho);
+    const reached = simTournament(ratings, rho, penaltyModel);
     if (seed) resetRng();
     for (const [team, stage] of Object.entries(reached)) {
       const r = STAGE_RANK[stage];
@@ -568,7 +579,7 @@ function runMonteCarlo(eloModel, iterations = 10000, { rho = DEFAULT_RHO, onProg
  *   odds: per-team stage probabilities (same shape as runMonteCarlo)
  *   bracket: match number -> { a: { team: count }, b: { team: count }, winner: { team: count } }
  */
-function runMonteCarloDetailed(eloModel, iterations = 10000, { rho = DEFAULT_RHO, onProgress, seed } = {}) {
+function runMonteCarloDetailed(eloModel, iterations = 10000, { rho = DEFAULT_RHO, onProgress, seed, penaltyModel = null } = {}) {
   const allTeams = Object.values(GROUPS).flat();
   const ratings = {};
   for (const t of allTeams) ratings[t] = eloModel.getRating(t);
@@ -585,7 +596,7 @@ function runMonteCarloDetailed(eloModel, iterations = 10000, { rho = DEFAULT_RHO
 
   for (let i = 0; i < iterations; i++) {
     if (seed) setRng(makeIterationRng(seed, i));
-    const { reached, bracket } = simTournamentDetailed(ratings, rho);
+    const { reached, bracket } = simTournamentDetailed(ratings, rho, penaltyModel);
     if (seed) resetRng();
     for (const [team, stage] of Object.entries(reached)) {
       const r = STAGE_RANK[stage];
@@ -649,6 +660,7 @@ module.exports = {
   simTournamentDetailed,
   runMonteCarlo,
   runMonteCarloDetailed,
+  knockoutWinner,
   HOSTS,
   R32_TEMPLATE,
   LATER_ROUNDS,

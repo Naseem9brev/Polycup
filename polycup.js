@@ -40,6 +40,7 @@ const {
   formatLineupPrediction,
 } = require('./lineupelo');
 const { buildPlayerModel, PLAYER_BLEND } = require('./playerxg');
+const { buildPenaltyModel } = require('./penalty');
 
 const DISCLAIMER =
   'Disclaimer: Polycup is a probabilistic model for entertainment only — not betting advice.';
@@ -173,6 +174,7 @@ function printPrediction(elo, teamA, teamB, rho) {
 const HELP = `
 Commands:
   <team1> vs <team2>        head-to-head match prediction (e.g. "Brazil vs France")
+  penalty <A> vs <B>        penalty shootout prediction (alias: shootout)
   lineups <A> vs <B>        lineup-adjusted prediction; fetches live ESPN lineup data
   player <A> vs <B>         [EXPERIMENTAL] player-level xG prediction vs Elo baseline
   watch                     list today's matches and attach to a live match
@@ -210,6 +212,98 @@ function handleMatch(elo, line, rho) {
   }
   printPrediction(elo, teamA, teamB, rho);
   return true;
+}
+
+/**
+ * Handle the "penalty <A> vs <B>" (or "shootout") command.
+ * Builds the penalty shootout model on first use, then prints a side-by-side
+ * prediction: win probability, likely takers, and key factors.
+ */
+async function handlePenalty(elo, cachedPenaltyModel, line, setPenaltyModel) {
+  const parts = line.split(/\s+(?:vs?|v\.?|-)\s+/i);
+  if (parts.length !== 2) {
+    console.log('  Usage: penalty <team1> vs <team2>   (alias: shootout)');
+    return;
+  }
+  const teamA = resolveTeam(parts[0].trim());
+  const teamB = resolveTeam(parts[1].trim());
+
+  if (!teamA || !teamB) {
+    const unknown = !teamA ? parts[0].trim() : parts[1].trim();
+    console.log(`  Unknown team: "${unknown}". Type "teams" to list valid teams.`);
+    return;
+  }
+  if (teamA === teamB) {
+    console.log('  Please pick two different teams.');
+    return;
+  }
+
+  let pm = cachedPenaltyModel;
+  if (!pm) {
+    try {
+      console.log('  Loading penalty shootout model (first use — may download ~50 KB) ...');
+      pm = await buildPenaltyModel({ elo, log: (m) => console.log('  ' + m) });
+      setPenaltyModel(pm);
+    } catch (e) {
+      console.log(`  Penalty model unavailable: ${e.message}`);
+      console.log('  Falling back to Elo-damped estimate.\n');
+      printPenaltyFallback(elo, teamA, teamB);
+      return;
+    }
+  }
+
+  printPenaltyPrediction(pm, teamA, teamB);
+}
+
+/** Print a penalty prediction using only the legacy Elo-damped fallback. */
+function printPenaltyFallback(elo, teamA, teamB) {
+  const eloA = elo.getRating(teamA);
+  const eloB = elo.getRating(teamB);
+  const hostA = HOSTS.has(teamA);
+  const hostB = HOSTS.has(teamB);
+  const e = 1 / (1 + Math.pow(10, ((eloB + (hostB ? 65 : 0)) - (eloA + (hostA ? 65 : 0))) / 400));
+  const pA = 0.5 + (e - 0.5) * 0.5;
+
+  console.log('');
+  console.log(`  Penalty shootout — ${teamA}  vs  ${teamB} (Elo fallback)`);
+  console.log('  ' + '-'.repeat(50));
+  console.log(`  ${teamA} win : ${pct(pA)}%`);
+  console.log(`  ${teamB} win : ${pct(1 - pA)}%`);
+  console.log('  (No historical shootout data available for this prediction.)');
+  console.log('');
+}
+
+/** Print a full penalty shootout prediction with takers and factors. */
+function printPenaltyPrediction(pm, teamA, teamB) {
+  const hostA = HOSTS.has(teamA);
+  const hostB = HOSTS.has(teamB);
+  const result = pm.predictPenaltyShootout(teamA, teamB, { hostA, hostB });
+  const takersA = pm.getTakers(teamA, 5);
+  const takersB = pm.getTakers(teamB, 5);
+
+  const fmtFactor = (f) => (f >= 0 ? '+' : '') + (f * 100).toFixed(1) + '%';
+  const fmtRate = (r) => r !== null && r !== undefined ? `${(r * 100).toFixed(1)}%` : 'n/a';
+  const fmtTakers = (arr) => arr.length > 0 ? arr.map((p) => p.name).join(', ') : '(no data)';
+
+  console.log('');
+  console.log(`  Penalty shootout — ${teamA}  vs  ${teamB}`);
+  console.log('  ' + '='.repeat(58));
+  console.log(`  ${teamA.padEnd(22)} ${(pct(result.pA) + '%').padStart(10)}  win probability`);
+  console.log(`  ${teamB.padEnd(22)} ${(pct(result.pB) + '%').padStart(10)}  win probability`);
+  console.log('  ' + '-'.repeat(58));
+  console.log(`  Factor                 ${teamA.padStart(10)}  ${teamB.padStart(10)}`);
+  console.log('  ' + '-'.repeat(58));
+  console.log(`  Elo pressure           ${fmtFactor(result.factorsA.eloAdvantage).padStart(10)}  ${fmtFactor(result.factorsB.eloAdvantage).padStart(10)}`);
+  console.log(`  Shootout history       ${fmtRate(result.factorsA.winRate).padStart(10)}  ${fmtRate(result.factorsB.winRate).padStart(10)}`);
+  console.log(`  Taker quality          ${(result.factorsA.takerQuality * 100).toFixed(1).padStart(9)}%  ${(result.factorsB.takerQuality * 100).toFixed(1).padStart(9)}%`);
+  console.log(`  Host bonus             ${fmtFactor(result.factorsA.hostAdvantage).padStart(10)}  ${fmtFactor(result.factorsB.hostAdvantage).padStart(10)}`);
+  console.log('  ' + '-'.repeat(58));
+  console.log(`  ${teamA} likely takers : ${fmtTakers(takersA)}`);
+  console.log(`  ${teamB} likely takers : ${fmtTakers(takersB)}`);
+  console.log('  ' + '='.repeat(58));
+  console.log('  Note: probabilities are team-level estimates. Individual kick order,');
+  console.log('  keeper form, and in-match momentum can all shift a real shootout.');
+  console.log('');
 }
 
 /**
@@ -501,7 +595,7 @@ function appendHistory(line) {
   }
 }
 
-function startPrompt(elo, odds, rho, favorites, bracket, initialPlayerModel) {
+function startPrompt(elo, odds, rho, favorites, bracket, initialPlayerModel, initialPenaltyModel) {
   const history = loadHistory();
   const rl = readline.createInterface({
     input: process.stdin,
@@ -517,6 +611,8 @@ function startPrompt(elo, odds, rho, favorites, bracket, initialPlayerModel) {
   let closeRequested = false;
   // Player model is loaded lazily on first `player` command; cache it here.
   let cachedPlayerModel = initialPlayerModel || null;
+  // Penalty model is loaded lazily on first `penalty` command; cache it here.
+  let cachedPenaltyModel = initialPenaltyModel || null;
 
   function finish() {
     console.log('\nThanks for using Polycup!');
@@ -558,11 +654,21 @@ function startPrompt(elo, odds, rho, favorites, bracket, initialPlayerModel) {
           onProgress: (done, total) => {
             process.stdout.write(`\r  simulated ${done.toLocaleString()} / ${total.toLocaleString()}`);
           },
+          penaltyModel: cachedPenaltyModel,
         });
         process.stdout.write('\r' + ' '.repeat(40) + '\r');
         printTitleTable(liveOdds, new Set(favorites));
       } catch (e) {
         console.log(`  Live error: ${e.message}`);
+      }
+    }
+    else if (lower.startsWith('penalty') || lower.startsWith('shootout')) {
+      const keyword = lower.startsWith('penalty') ? 'penalty' : 'shootout';
+      const rest = line.slice(keyword.length).trim();
+      try {
+        await handlePenalty(elo, cachedPenaltyModel, rest, (pm) => { cachedPenaltyModel = pm; });
+      } catch (e) {
+        console.log(`  Penalty error: ${e.message}`);
       }
     }
     else if (lower.startsWith('lineups')) {
@@ -685,12 +791,24 @@ async function main() {
   const elo = await buildEloModel({ log });
   log(`Computed Elo ratings from ${elo.matchCount.toLocaleString()} historical matches.`);
 
+  // Build the penalty shootout model on a best-effort basis. It is small (~50 KB)
+  // and improves every knockout tie-break. If the download/cache fails, the
+  // simulation transparently falls back to the Elo-damped shootout estimate.
+  let penaltyModel = null;
+  try {
+    penaltyModel = await buildPenaltyModel({ elo, log: (m) => console.log('  ' + m) });
+  } catch (e) {
+    log(`Penalty shootout model unavailable: ${e.message}`);
+    log('Falling back to Elo-damped penalty shootouts.');
+  }
+
   const effectiveRho = rho !== undefined ? rho : await estimateRhoFromDataset(elo, expectedGoals, { log });
 
   log(`Running ${iterations.toLocaleString()} tournament simulations ${seed ? `(seed=${seed}) ` : ''}...`);
   const { odds, bracket } = runMonteCarloDetailed(elo, iterations, {
     rho: effectiveRho,
     seed,
+    penaltyModel,
     onProgress: (done, total) => {
       process.stdout.write(`\r  simulated ${done.toLocaleString()} / ${total.toLocaleString()}`);
     },
@@ -734,7 +852,8 @@ async function main() {
 
   printTitleTable(odds, new Set(favorites));
   // Pass null for the player model — it will be built lazily on first `player` command.
-  startPrompt(elo, odds, effectiveRho, favorites, bracket, null);
+  // Pass the pre-built penalty model so the `live` command can use it too.
+  startPrompt(elo, odds, effectiveRho, favorites, bracket, null, penaltyModel);
 }
 
 main().catch((err) => {
