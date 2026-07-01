@@ -32,6 +32,7 @@ const { formatProfile } = require('./profile');
 const { startWatch, listWatchableMatches } = require('./watch');
 const { GROUPS, TEAMS, GROUP_OF, resolveTeam } = require('./worldcup2026');
 const { mergeConfig, loadConfig } = require('./config');
+const { loadFixtures, findFixture, contextAdjustments, resolveVenue } = require('./context');
 const { fetchScoreboard, fetchMatchSummary } = require('./datasource');
 const { enrichMatchState } = require('./matchstate');
 const {
@@ -171,9 +172,109 @@ function printPrediction(elo, teamA, teamB, rho) {
   console.log('');
 }
 
+/**
+ * Render a head-to-head prediction including venue/travel/rest/altitude context.
+ * Looks up the fixture in the loaded dataset if available; otherwise asks for a venue.
+ */
+function handleContext(elo, line, rho, fixtures) {
+  // Support optional "at <venue>" suffix after the match.
+  const atMatch = line.match(/\s+at\s+(.+)$/i);
+  const matchPart = atMatch ? line.slice(0, line.length - atMatch[0].length) : line;
+  const explicitVenue = atMatch ? atMatch[1].trim() : null;
+
+  const parts = matchPart.split(/\s+(?:vs?|v\.?|-)\s+/i);
+  if (parts.length !== 2) {
+    console.log('  Usage: context <team1> vs <team2> [at <venue>]');
+    console.log('  Example: context Brazil vs France at Mexico City');
+    return;
+  }
+  const teamA = resolveTeam(parts[0].trim());
+  const teamB = resolveTeam(parts[1].trim());
+  if (!teamA || !teamB) {
+    const unknown = !teamA ? parts[0].trim() : parts[1].trim();
+    console.log(`  Unknown team: "${unknown}". Type "teams" to list valid teams.`);
+    return;
+  }
+  if (teamA === teamB) {
+    console.log('  Please pick two different teams.');
+    return;
+  }
+
+  const hostA = HOSTS.has(teamA);
+  const hostB = HOSTS.has(teamB);
+  const baseA = elo.getRating(teamA);
+  const baseB = elo.getRating(teamB);
+  const base = predictMatch(baseA, baseB, hostA, hostB, rho);
+
+  let fixture = null;
+  if (fixtures) {
+    fixture = findFixture(fixtures, teamA, teamB);
+  }
+
+  let venue = null;
+  let matchDate = null;
+  if (explicitVenue) {
+    venue = resolveVenue(explicitVenue);
+    if (!venue) {
+      console.log(`  Unknown venue: "${explicitVenue}". Known venues include Mexico City, Toronto, Miami, ...`);
+      return;
+    }
+    matchDate = fixture ? fixture.date : new Date().toISOString().slice(0, 10);
+  } else if (fixture) {
+    venue = resolveVenue(fixture.venue);
+    matchDate = fixture.date;
+  }
+
+  if (!venue) {
+    console.log('');
+    console.log(`  ${teamA}  vs  ${teamB}`);
+    console.log('  No 2026 fixture or venue specified; showing base prediction only.');
+    console.log('  Use: context <team1> vs <team2> at <venue>');
+    console.log('  ' + '-'.repeat(40));
+    console.log(`  ${teamA} win : ${pct(base.pWin)}%`);
+    console.log(`  Draw       : ${pct(base.pDraw)}%`);
+    console.log(`  ${teamB} win : ${pct(base.pLoss)}%`);
+    console.log(`  Expected goals : ${teamA} ${base.xgA.toFixed(2)} - ${base.xgB.toFixed(2)} ${teamB}`);
+    console.log('');
+    return;
+  }
+
+  const adj = contextAdjustments(teamA, teamB, venue, matchDate, fixtures);
+  const ctx = { homeAdj: adj.homeAdj, awayAdj: adj.awayAdj };
+  const revised = predictMatch(baseA, baseB, hostA, hostB, rho, ctx);
+
+  const fmtFactor = (n) => (n >= 0 ? '+' : '') + n.toFixed(1);
+  console.log('');
+  console.log(`  ${teamA}  vs  ${teamB}`);
+  console.log(`  Venue: ${venue.city}, ${venue.country}  |  Date: ${matchDate}`);
+  console.log('  ' + '='.repeat(60));
+  console.log(`  ${'Factor'.padEnd(18)}${teamA.padStart(10)}  ${teamB.padStart(10)}`);
+  console.log('  ' + '-'.repeat(60));
+  console.log(`  ${'Rest'.padEnd(18)}${fmtFactor(adj.homeFactors.rest).padStart(10)}  ${fmtFactor(adj.awayFactors.rest).padStart(10)}`);
+  console.log(`  ${'Travel'.padEnd(18)}${fmtFactor(adj.homeFactors.travel).padStart(10)}  ${fmtFactor(adj.awayFactors.travel).padStart(10)}`);
+  console.log(`  ${'Timezone'.padEnd(18)}${fmtFactor(adj.homeFactors.timezone).padStart(10)}  ${fmtFactor(adj.awayFactors.timezone).padStart(10)}`);
+  console.log(`  ${'Altitude'.padEnd(18)}${fmtFactor(adj.homeFactors.altitude).padStart(10)}  ${fmtFactor(adj.awayFactors.altitude).padStart(10)}`);
+  console.log(`  ${'Host venue'.padEnd(18)}${fmtFactor(adj.homeFactors.hostVenue).padStart(10)}  ${fmtFactor(adj.awayFactors.hostVenue).padStart(10)}`);
+  console.log(`  ${'Climate'.padEnd(18)}${fmtFactor(adj.homeFactors.climate).padStart(10)}  ${fmtFactor(adj.awayFactors.climate).padStart(10)}`);
+  console.log('  ' + '-'.repeat(60));
+  console.log(`  ${'Total adjustment'.padEnd(18)}${fmtFactor(adj.homeAdj).padStart(10)}  ${fmtFactor(adj.awayAdj).padStart(10)}`);
+  console.log('  ' + '='.repeat(60));
+  console.log(`  ${'Outcome'.padEnd(22)}${'Base'.padStart(10)}  ${'Context'.padStart(10)}`);
+  console.log(`  ${(teamA + ' win:').padEnd(22)}${(pct(base.pWin) + '%').padStart(10)}  ${(pct(revised.pWin) + '%').padStart(10)}`);
+  console.log(`  ${'Draw:'.padEnd(22)}${(pct(base.pDraw) + '%').padStart(10)}  ${(pct(revised.pDraw) + '%').padStart(10)}`);
+  console.log(`  ${(teamB + ' win:').padEnd(22)}${(pct(base.pLoss) + '%').padStart(10)}  ${(pct(revised.pLoss) + '%').padStart(10)}`);
+  console.log(`  ${(teamA + ' xG:').padEnd(22)}${(base.xgA.toFixed(2)).padStart(10)}  ${(revised.xgA.toFixed(2)).padStart(10)}`);
+  console.log(`  ${(teamB + ' xG:').padEnd(22)}${(base.xgB.toFixed(2)).padStart(10)}  ${(revised.xgB.toFixed(2)).padStart(10)}`);
+  console.log('  ' + '='.repeat(60));
+  console.log('');
+}
+
 const HELP = `
 Commands:
   <team1> vs <team2>        head-to-head match prediction (e.g. "Brazil vs France")
+  context <A> vs <B>        show venue/travel/rest/altitude adjustments and revised prediction
+  venue <A> vs <B>          alias for context
+  xg <A> vs <B>             [EXPERIMENTAL] match-level xG model vs Elo baseline
   penalty <A> vs <B>        penalty shootout prediction (alias: shootout)
   lineups <A> vs <B>        lineup-adjusted prediction; fetches live ESPN lineup data
   player <A> vs <B>         [EXPERIMENTAL] player-level xG prediction vs Elo baseline
@@ -189,6 +290,10 @@ Commands:
   export json|csv [f]       export title odds (and head-to-head) as JSON or CSV
   help                      show this help
   quit / exit               leave Polycup
+
+Flags (on startup):
+  --xg                      use xG goal-rate model lambdas instead of Elo (EXPERIMENTAL)
+  --context                 apply venue/travel/rest/altitude adjustments in tournament simulation
 
 Team names are loose: "Brazil", "BRA" and "bra" all resolve to Brazil.
 Common typos are also corrected.
@@ -595,7 +700,7 @@ function appendHistory(line) {
   }
 }
 
-function startPrompt(elo, odds, rho, favorites, bracket, initialPlayerModel, initialPenaltyModel) {
+function startPrompt(elo, odds, rho, favorites, bracket, initialPlayerModel, initialPenaltyModel, fixtures) {
   const history = loadHistory();
   const rl = readline.createInterface({
     input: process.stdin,
@@ -742,6 +847,15 @@ function startPrompt(elo, odds, rho, favorites, bracket, initialPlayerModel, ini
         generateReportHTML({ odds, elo, rho, modelText: MODEL_TEXT }));
     }
     else if (lower.startsWith('export')) handleExport(elo, odds, rho, line.slice('export'.length).trim());
+    else if (lower.startsWith('context') || lower.startsWith('venue')) {
+      const keyword = lower.startsWith('context') ? 'context' : 'venue';
+      const rest = line.slice(keyword.length).trim();
+      try {
+        handleContext(elo, rest, rho, fixtures);
+      } catch (e) {
+        console.log(`  Context error: ${e.message}`);
+      }
+    }
     else if (/\s+(?:vs?|v\.?|-)\s+/i.test(line)) handleMatch(elo, line, rho);
     else console.log('  Unrecognized command. Type "help" for options.');
 
@@ -782,6 +896,7 @@ async function main() {
   const rho = settings.rho !== undefined ? settings.rho : undefined;
   const outputFormat = settings.format || 'table';
   const favorites = Array.isArray(settings.favorites) ? settings.favorites : [];
+  const useContext = cliArgs.context === true;
 
   console.log('Polycup — 2026 FIFA World Cup predictor');
   console.log(DISCLAIMER);
@@ -804,11 +919,23 @@ async function main() {
 
   const effectiveRho = rho !== undefined ? rho : await estimateRhoFromDataset(elo, expectedGoals, { log });
 
+  // Load 2026 fixtures so the interactive `context` command can look up venues and
+  // dates. They are only applied to the Monte Carlo simulation when --context is set.
+  const fixtures = loadFixtures();
+  if (useContext) {
+    if (fixtures.length === 0) {
+      log('Warning: --context requested but no 2026 fixtures could be loaded. Context adjustments disabled.');
+    } else {
+      log(`Context mode active: loaded ${fixtures.length.toLocaleString()} 2026 fixtures.`);
+    }
+  }
+
   log(`Running ${iterations.toLocaleString()} tournament simulations ${seed ? `(seed=${seed}) ` : ''}...`);
   const { odds, bracket } = runMonteCarloDetailed(elo, iterations, {
     rho: effectiveRho,
     seed,
     penaltyModel,
+    useContext: useContext && fixtures && fixtures.length > 0,
     onProgress: (done, total) => {
       process.stdout.write(`\r  simulated ${done.toLocaleString()} / ${total.toLocaleString()}`);
     },
@@ -853,7 +980,8 @@ async function main() {
   printTitleTable(odds, new Set(favorites));
   // Pass null for the player model — it will be built lazily on first `player` command.
   // Pass the pre-built penalty model so the `live` command can use it too.
-  startPrompt(elo, odds, effectiveRho, favorites, bracket, null, penaltyModel);
+  // Pass loaded fixtures so the `context` command can look up venues and dates.
+  startPrompt(elo, odds, effectiveRho, favorites, bracket, null, penaltyModel, fixtures);
 }
 
 main().catch((err) => {

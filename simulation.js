@@ -14,6 +14,7 @@ const path = require('path');
 const { GROUPS } = require('./worldcup2026');
 const { DEFAULT_RHO, sampleDixonColes, jointProbabilityMatrix } = require('./dixoncoles');
 const { rng, setRng, resetRng, makeIterationRng } = require('./rng');
+const { loadFixtures, findFixture, contextAdjustments } = require('./context');
 const PROGRESS_FILE = path.join(process.cwd(), '.polycup_progress.json');
 
 const TOTAL_EXPECTED_GOALS = 2.5; // total xG split between the two sides
@@ -38,9 +39,9 @@ const HOSTS = new Set(['USA', 'Canada', 'Mexico']);
  * In knockout matches, the favorite's share is capped to prevent blowout xG
  * splits that under-represent real tournament upsets.
  */
-function expectedGoals(eloA, eloB, hostA = false, hostB = false, knockout = false) {
-  const adjA = eloA + (hostA ? HOST_ELO_BONUS : 0);
-  const adjB = eloB + (hostB ? HOST_ELO_BONUS : 0);
+function expectedGoals(eloA, eloB, hostA = false, hostB = false, knockout = false, ctx = null) {
+  const adjA = eloA + (hostA ? HOST_ELO_BONUS : 0) + (ctx ? ctx.homeAdj : 0);
+  const adjB = eloB + (hostB ? HOST_ELO_BONUS : 0) + (ctx ? ctx.awayAdj : 0);
   const diff = adjA - adjB;
   let shareA = 1 / (1 + Math.pow(10, -diff / ELO_GOAL_SCALE));
   if (knockout) {
@@ -87,10 +88,10 @@ function eloExpected(eloA, eloB) {
  * @returns {object} { pWin, pDraw, pLoss, xgRemA, xgRemB, predictedFinal, scoreDist }
  */
 function predictMidMatch(eloA, eloB, currentScore, minute, opts = {}) {
-  const { hostA = false, hostB = false, knockout = false, rho = DEFAULT_RHO } = opts;
+  const { hostA = false, hostB = false, knockout = false, rho = DEFAULT_RHO, ctx = null } = opts;
 
   // Full-match expected goals (what the model would predict pre-kick-off)
-  const [fullLambdaA, fullLambdaB] = expectedGoals(eloA, eloB, hostA, hostB, knockout);
+  const [fullLambdaA, fullLambdaB] = expectedGoals(eloA, eloB, hostA, hostB, knockout, ctx);
 
   // Scale expected goals by remaining time
   const minutesCapped = Math.max(0, Math.min(90, minute));
@@ -162,8 +163,8 @@ function predictMidMatch(eloA, eloB, currentScore, minute, opts = {}) {
  * loss probabilities, each side's expected goals and the single most likely
  * exact scoreline.
  */
-function predictMatch(eloA, eloB, hostA = false, hostB = false, rho = DEFAULT_RHO) {
-  const [lambdaA, lambdaB] = expectedGoals(eloA, eloB, hostA, hostB);
+function predictMatch(eloA, eloB, hostA = false, hostB = false, rho = DEFAULT_RHO, ctx = null) {
+  const [lambdaA, lambdaB] = expectedGoals(eloA, eloB, hostA, hostB, false, ctx);
   const probs = jointProbabilityMatrix(lambdaA, lambdaB, rho, MAX_GOALS);
 
   let pWin = 0;
@@ -194,14 +195,14 @@ function predictMatch(eloA, eloB, hostA = false, hostB = false, rho = DEFAULT_RH
 // --- Single simulated match (Poisson draw) --------------------------------
 
 /** Simulate one match; returns { ga, gb }. */
-function simMatch(eloA, eloB, hostA, hostB, rho = DEFAULT_RHO) {
-  const [lambdaA, lambdaB] = expectedGoals(eloA, eloB, hostA, hostB);
+function simMatch(eloA, eloB, hostA, hostB, rho = DEFAULT_RHO, ctx = null) {
+  const [lambdaA, lambdaB] = expectedGoals(eloA, eloB, hostA, hostB, false, ctx);
   return sampleDixonColes(lambdaA, lambdaB, rho, MAX_GOALS);
 }
 
 /** Decide a knockout tie. Returns winner index (0 = A, 1 = B). */
-function knockoutWinner(eloA, eloB, hostA, hostB, rho = DEFAULT_RHO, teamA = null, teamB = null, penaltyModel = null) {
-  const [lambdaA, lambdaB] = expectedGoals(eloA, eloB, hostA, hostB, true);
+function knockoutWinner(eloA, eloB, hostA, hostB, rho = DEFAULT_RHO, teamA = null, teamB = null, penaltyModel = null, ctx = null) {
+  const [lambdaA, lambdaB] = expectedGoals(eloA, eloB, hostA, hostB, true, ctx);
   const { ga, gb } = sampleDixonColes(lambdaA, lambdaB, rho, MAX_GOALS);
   if (ga > gb) return 0;
   if (gb > ga) return 1;
@@ -288,15 +289,32 @@ function compareStandings(a, b, ratings) {
   return ratings[b.team] - ratings[a.team]; // documented tiebreak approximation
 }
 
-/** Simulate a single group's round-robin; returns standings sorted best-first. */
-function simGroup(teams, ratings, rho = DEFAULT_RHO) {
+/** Simulate a single group's round-robin; returns standings sorted best-first.
+ *
+ * When `opts.useContext` is true and `opts.fixtures` is provided, the fixture
+ * list is used to determine home/away, venue, date, and compute per-match
+ * context adjustments (rest, travel, altitude, etc.).
+ */
+function simGroup(teams, ratings, rho = DEFAULT_RHO, opts = {}) {
+  const { fixtures, useContext } = opts;
   const table = {};
   for (const t of teams) table[t] = emptyStanding(t);
   for (let i = 0; i < teams.length; i++) {
     for (let j = i + 1; j < teams.length; j++) {
       const A = teams[i];
       const B = teams[j];
-      const { ga, gb } = simMatch(ratings[A], ratings[B], HOSTS.has(A), HOSTS.has(B), rho);
+      let ctx = null;
+      if (useContext && fixtures) {
+        const fixture = findFixture(fixtures, A, B);
+        if (fixture) {
+          const adj = contextAdjustments(fixture.home, fixture.away, fixture.venue, fixture.date, fixtures);
+          ctx = {
+            homeAdj: A === fixture.home ? adj.homeAdj : adj.awayAdj,
+            awayAdj: A === fixture.home ? adj.awayAdj : adj.homeAdj,
+          };
+        }
+      }
+      const { ga, gb } = simMatch(ratings[A], ratings[B], HOSTS.has(A), HOSTS.has(B), rho, ctx);
       table[A].gf += ga; table[A].ga += gb;
       table[B].gf += gb; table[B].ga += ga;
       if (ga > gb) table[A].pts += 3;
@@ -306,6 +324,18 @@ function simGroup(teams, ratings, rho = DEFAULT_RHO) {
   }
   for (const t of teams) table[t].gd = table[t].gf - table[t].ga;
   return Object.values(table).sort((x, y) => compareStandings(x, y, ratings));
+}
+
+/** Build a context-adjustment object for a knockout match if fixtures exist. */
+function knockoutContext(teamA, teamB, fixtures, useContext) {
+  if (!useContext || !fixtures) return null;
+  const fixture = findFixture(fixtures, teamA, teamB);
+  if (!fixture) return null;
+  const adj = contextAdjustments(fixture.home, fixture.away, fixture.venue, fixture.date, fixtures);
+  return {
+    homeAdj: teamA === fixture.home ? adj.homeAdj : adj.awayAdj,
+    awayAdj: teamA === fixture.home ? adj.awayAdj : adj.homeAdj,
+  };
 }
 
 // --- Third-place assignment (bipartite matching over allowed slots) --------
@@ -359,14 +389,18 @@ const STAGE_RANK = { GROUP: 0, R32: 1, R16: 2, QF: 3, SF: 4, FINAL: 5, CHAMPION:
 /**
  * Simulate one full tournament. Returns { team: furthestStageName } for the
  * 32 knockout teams; teams not present exited in the group stage.
+ *
+ * `opts.useContext` enables fixture-based context adjustments; `opts.fixtures`
+ * should be the 2026 FIFA World Cup fixture list from `context.loadFixtures()`.
  */
-function simTournament(ratings, rho = DEFAULT_RHO, penaltyModel = null) {
+function simTournament(ratings, rho = DEFAULT_RHO, penaltyModel = null, opts = {}) {
+  const { fixtures, useContext } = opts || {};
   // Group stage.
   const winners = {};
   const runners = {};
   const thirds = []; // { team, standing, group }
   for (const letter of GROUP_LETTERS) {
-    const standings = simGroup(GROUPS[letter], ratings, rho);
+    const standings = simGroup(GROUPS[letter], ratings, rho, { fixtures, useContext });
     winners[letter] = standings[0].team;
     runners[letter] = standings[1].team;
     thirds.push({ group: letter, ...standings[2] });
@@ -402,7 +436,8 @@ function simTournament(ratings, rho = DEFAULT_RHO, penaltyModel = null) {
     const teamB = m.b.t === 'third' ? thirdByGroup[thirdAssignment[m.n]] : resolveSlot(m.b);
     markReach(teamA, 'R32');
     markReach(teamB, 'R32');
-    const w = knockoutWinner(ratings[teamA], ratings[teamB], matchHost(teamA), matchHost(teamB), rho, teamA, teamB, penaltyModel);
+    const ctx = knockoutContext(teamA, teamB, fixtures, useContext);
+    const w = knockoutWinner(ratings[teamA], ratings[teamB], matchHost(teamA), matchHost(teamB), rho, teamA, teamB, penaltyModel, ctx);
     matchWinner[m.n] = w === 0 ? teamA : teamB;
   }
 
@@ -413,7 +448,8 @@ function simTournament(ratings, rho = DEFAULT_RHO, penaltyModel = null) {
     const stage = ROUND_OF[m.n];
     markReach(teamA, stage);
     markReach(teamB, stage);
-    const w = knockoutWinner(ratings[teamA], ratings[teamB], matchHost(teamA), matchHost(teamB), rho, teamA, teamB, penaltyModel);
+    const ctx = knockoutContext(teamA, teamB, fixtures, useContext);
+    const w = knockoutWinner(ratings[teamA], ratings[teamB], matchHost(teamA), matchHost(teamB), rho, teamA, teamB, penaltyModel, ctx);
     const winner = w === 0 ? teamA : teamB;
     matchWinner[m.n] = winner;
     if (m.n === 103) markReach(winner, 'CHAMPION');
@@ -426,8 +462,12 @@ function simTournament(ratings, rho = DEFAULT_RHO, penaltyModel = null) {
  * Simulate one full tournament and also return the full bracket matchups.
  * Returns { reached, bracket } where bracket is a map of match number to
  * { a: team, b: team, winner: team } for that simulation.
+ *
+ * `opts.useContext` enables fixture-based context adjustments; `opts.fixtures`
+ * should be the 2026 FIFA World Cup fixture list from `context.loadFixtures()`.
  */
-function simTournamentDetailed(ratings, rho = DEFAULT_RHO, penaltyModel = null) {
+function simTournamentDetailed(ratings, rho = DEFAULT_RHO, penaltyModel = null, opts = {}) {
+  const { fixtures, useContext } = opts || {};
   const reached = {};
   const bracket = {};
   const markReach = (team, stage) => {
@@ -442,7 +482,7 @@ function simTournamentDetailed(ratings, rho = DEFAULT_RHO, penaltyModel = null) 
   const runners = {};
   const thirds = [];
   for (const letter of GROUP_LETTERS) {
-    const standings = simGroup(GROUPS[letter], ratings, rho);
+    const standings = simGroup(GROUPS[letter], ratings, rho, { fixtures, useContext });
     winners[letter] = standings[0].team;
     runners[letter] = standings[1].team;
     thirds.push({ group: letter, ...standings[2] });
@@ -469,7 +509,8 @@ function simTournamentDetailed(ratings, rho = DEFAULT_RHO, penaltyModel = null) 
     const teamB = resolveSlot(m.b, m.n);
     markReach(teamA, 'R32');
     markReach(teamB, 'R32');
-    const w = knockoutWinner(ratings[teamA], ratings[teamB], matchHost(teamA), matchHost(teamB), rho, teamA, teamB, penaltyModel);
+    const ctx = knockoutContext(teamA, teamB, fixtures, useContext);
+    const w = knockoutWinner(ratings[teamA], ratings[teamB], matchHost(teamA), matchHost(teamB), rho, teamA, teamB, penaltyModel, ctx);
     const winner = w === 0 ? teamA : teamB;
     matchWinner[m.n] = winner;
     bracket[m.n] = { a: teamA, b: teamB, winner };
@@ -482,7 +523,8 @@ function simTournamentDetailed(ratings, rho = DEFAULT_RHO, penaltyModel = null) 
     const stage = ROUND_OF[m.n];
     markReach(teamA, stage);
     markReach(teamB, stage);
-    const w = knockoutWinner(ratings[teamA], ratings[teamB], matchHost(teamA), matchHost(teamB), rho, teamA, teamB, penaltyModel);
+    const ctx = knockoutContext(teamA, teamB, fixtures, useContext);
+    const w = knockoutWinner(ratings[teamA], ratings[teamB], matchHost(teamA), matchHost(teamB), rho, teamA, teamB, penaltyModel, ctx);
     const winner = w === 0 ? teamA : teamB;
     matchWinner[m.n] = winner;
     bracket[m.n] = { a: teamA, b: teamB, winner };
@@ -496,11 +538,13 @@ function simTournamentDetailed(ratings, rho = DEFAULT_RHO, penaltyModel = null) 
  * Run the Monte Carlo simulation `iterations` times and tally how often each
  * team reaches each stage. Returns per-team probabilities (0..1).
  */
-function runMonteCarlo(eloModel, iterations = 10000, { rho = DEFAULT_RHO, onProgress, seed, resume = false, penaltyModel = null } = {}) {
+function runMonteCarlo(eloModel, iterations = 10000, { rho = DEFAULT_RHO, onProgress, seed, resume = false, penaltyModel = null, useContext = false } = {}) {
   const allTeams = Object.values(GROUPS).flat();
   // Snapshot ratings into a plain map for speed.
   const ratings = {};
   for (const t of allTeams) ratings[t] = eloModel.getRating(t);
+
+  const fixtures = useContext ? loadFixtures() : null;
 
   const tally = {};
   for (const t of allTeams) {
@@ -532,7 +576,7 @@ function runMonteCarlo(eloModel, iterations = 10000, { rho = DEFAULT_RHO, onProg
 
   for (let i = startIteration; i < iterations; i++) {
     if (seed) setRng(makeIterationRng(seed, i));
-    const reached = simTournament(ratings, rho, penaltyModel);
+    const reached = simTournament(ratings, rho, penaltyModel, { fixtures, useContext });
     if (seed) resetRng();
     for (const [team, stage] of Object.entries(reached)) {
       const r = STAGE_RANK[stage];
@@ -579,10 +623,12 @@ function runMonteCarlo(eloModel, iterations = 10000, { rho = DEFAULT_RHO, onProg
  *   odds: per-team stage probabilities (same shape as runMonteCarlo)
  *   bracket: match number -> { a: { team: count }, b: { team: count }, winner: { team: count } }
  */
-function runMonteCarloDetailed(eloModel, iterations = 10000, { rho = DEFAULT_RHO, onProgress, seed, penaltyModel = null } = {}) {
+function runMonteCarloDetailed(eloModel, iterations = 10000, { rho = DEFAULT_RHO, onProgress, seed, penaltyModel = null, useContext = false } = {}) {
   const allTeams = Object.values(GROUPS).flat();
   const ratings = {};
   for (const t of allTeams) ratings[t] = eloModel.getRating(t);
+
+  const fixtures = useContext ? loadFixtures() : null;
 
   const tally = {};
   for (const t of allTeams) {
@@ -596,7 +642,7 @@ function runMonteCarloDetailed(eloModel, iterations = 10000, { rho = DEFAULT_RHO
 
   for (let i = 0; i < iterations; i++) {
     if (seed) setRng(makeIterationRng(seed, i));
-    const { reached, bracket } = simTournamentDetailed(ratings, rho, penaltyModel);
+    const { reached, bracket } = simTournamentDetailed(ratings, rho, penaltyModel, { fixtures, useContext });
     if (seed) resetRng();
     for (const [team, stage] of Object.entries(reached)) {
       const r = STAGE_RANK[stage];
