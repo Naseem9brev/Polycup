@@ -1,5 +1,6 @@
 # Polycup local dataset cache
 .cache_results.csv
+.cache_scorers.csv
 
 # Polycup seeded-run progress checkpoint
 .polycup_progress.json

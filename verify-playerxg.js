@@ -4,7 +4,7 @@
 /**
  * verify-playerxg.js
  *
- * Verification script for the Phase 12 player-level xG model.
+ * Verification script for the Phase 9 player-level xG model.
  *
  * Checks that the model:
  *   1. Loads and parses the goalscorers dataset without errors.
@@ -64,7 +64,7 @@ function assertBetween(val, lo, hi, label) {
 
 async function verify() {
   console.log('');
-  console.log('Polycup — Phase 12 Player xG model verification');
+  console.log('Polycup — Phase 9 Player xG model verification');
   console.log('='.repeat(56));
 
   // ---- 1. Build models -----
