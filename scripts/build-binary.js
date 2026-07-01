@@ -132,7 +132,7 @@ function injectBlob() {
   } catch (err) {
     console.log('postject not found globally; trying npx postject...');
     const npxCmd = isWin ? 'npx.cmd' : 'npx';
-    run(npxCmd, ['postject', ...args]);
+    run(npxCmd, ['postject', ...args], isWin ? { shell: true } : {});
   }
 
   if (isMac) {
